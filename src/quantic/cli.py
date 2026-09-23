@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from quantic.data.bundle import DatasetBundle
-from quantic.data.catalog import DEFAULT_CATALOG_PATH, Catalog
+from quantic.data.catalog import DEFAULT_CATALOG_PATH, Catalog, DuplicateBundleError
 from quantic.data.request import default_request
 from quantic.data.schemas import validate_values
 from quantic.data.synth import SynthConfig, generate_bundle
@@ -37,6 +37,13 @@ def synth(
     buckets: Annotated[int, typer.Option("--buckets")] = 13,
     seed: Annotated[int, typer.Option("--seed")] = 0,
     depth_levels: Annotated[int, typer.Option("--depth-levels")] = 10,
+    bundle_id: Annotated[
+        str | None,
+        typer.Option(
+            "--bundle-id",
+            help="Override the derived bundle id (default: synth-seed{seed}-{days}d).",
+        ),
+    ] = None,
     catalog: Annotated[Path, typer.Option("--catalog")] = DEFAULT_CATALOG_PATH,
 ) -> None:
     """Generate a synthetic bundle with known ground-truth impact parameters."""
@@ -47,8 +54,15 @@ def synth(
         seed=seed,
         depth_levels=depth_levels,
     )
-    bundle = generate_bundle(out, cfg)
-    entry = Catalog(catalog).register(bundle)
+    bundle = generate_bundle(out, cfg, bundle_id=bundle_id)
+    try:
+        entry = Catalog(catalog).register(bundle)
+    except DuplicateBundleError as exc:
+        console.print(f"[red]registration failed:[/red] {exc}")
+        console.print(
+            "[red]hint:[/red] pass a different --bundle-id, or write to a different --out"
+        )
+        raise typer.Exit(code=1) from exc
     console.print(f"[green]wrote[/green] {entry.bundle_id} -> {out}")
     console.print(f"content_hash {entry.content_hash}")
 
@@ -69,7 +83,16 @@ def ingest(
     except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the operator
         console.print(f"[red]integrity check failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
-    entry = Catalog(catalog).register(bundle)
+    try:
+        entry = Catalog(catalog).register(bundle)
+    except DuplicateBundleError as exc:
+        console.print(f"[red]registration failed:[/red] {exc}")
+        console.print(
+            "[red]hint:[/red] this bundle's manifest.json bundle_id collides with a "
+            "differently-content bundle already in the catalog; edit bundle_id in "
+            "manifest.json, or register into a different --catalog"
+        )
+        raise typer.Exit(code=1) from exc
     console.print(f"[green]registered[/green] {entry.bundle_id}")
     console.print(f"content_hash {entry.content_hash}")
 

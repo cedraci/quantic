@@ -99,6 +99,65 @@ def test_ingest_fails_loudly_on_value_invalid_bundle(tmp_path):
     assert "bid_size" in result.output
 
 
+def test_synth_rerun_with_different_symbols_fails_loudly_not_with_a_traceback(tmp_path):
+    catalog = tmp_path / "catalog.json"
+    first = runner.invoke(
+        app,
+        ["data", "synth", "--out", str(tmp_path / "a"), "--symbols", "SYNA,SYNB",
+         "--days", "2", "--buckets", "3", "--seed", "5", "--catalog", str(catalog)],
+    )
+    assert first.exit_code == 0, first.output
+
+    second = runner.invoke(
+        app,
+        ["data", "synth", "--out", str(tmp_path / "b"), "--symbols", "SYNA,SYNB,SYNC",
+         "--days", "2", "--buckets", "3", "--seed", "5", "--catalog", str(catalog)],
+    )
+    assert second.exit_code != 0
+    assert second.exception is None or isinstance(second.exception, SystemExit)
+    assert "Traceback" not in second.output
+    assert "registration failed" in second.output
+
+
+def test_synth_rerun_with_explicit_distinct_bundle_id_succeeds(tmp_path):
+    catalog = tmp_path / "catalog.json"
+    first = runner.invoke(
+        app,
+        ["data", "synth", "--out", str(tmp_path / "a"), "--symbols", "SYNA,SYNB",
+         "--days", "2", "--buckets", "3", "--seed", "5", "--catalog", str(catalog)],
+    )
+    assert first.exit_code == 0, first.output
+
+    second = runner.invoke(
+        app,
+        ["data", "synth", "--out", str(tmp_path / "b"), "--symbols", "SYNA,SYNB,SYNC",
+         "--days", "2", "--buckets", "3", "--seed", "5",
+         "--bundle-id", "synth-seed5-2d-three-symbols",
+         "--catalog", str(catalog)],
+    )
+    assert second.exit_code == 0, second.output
+    entries = json.loads(catalog.read_text())
+    assert {e["bundle_id"] for e in entries} == {
+        "synth-seed5-2d",
+        "synth-seed5-2d-three-symbols",
+    }
+
+
+def test_synth_identical_rerun_is_idempotent(tmp_path):
+    catalog = tmp_path / "catalog.json"
+    args = [
+        "data", "synth", "--out", str(tmp_path / "a"), "--symbols", "SYNA,SYNB",
+        "--days", "2", "--buckets", "3", "--seed", "5", "--catalog", str(catalog),
+    ]
+    first = runner.invoke(app, args)
+    assert first.exit_code == 0, first.output
+
+    second = runner.invoke(app, args)
+    assert second.exit_code == 0, second.output
+    entries = json.loads(catalog.read_text())
+    assert len(entries) == 1
+
+
 def test_list_shows_registered_bundles(tmp_path):
     out = tmp_path / "synth"
     catalog = tmp_path / "catalog.json"
