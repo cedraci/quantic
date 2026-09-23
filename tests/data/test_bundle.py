@@ -1,9 +1,11 @@
 import datetime as dt
+import json
 
 import polars as pl
 import pytest
 
 from quantic.data.bundle import BundleIntegrityError, DatasetBundle
+from quantic.data.manifest import MANIFEST_FILENAME
 
 
 def _daily() -> pl.DataFrame:
@@ -291,6 +293,26 @@ def test_failed_write_does_not_destroy_existing_bundle(tmp_path):
     loaded = DatasetBundle.load(root)
     loaded.validate()  # must not raise: the original good bundle survives
     assert loaded.l1()["ts_ns"].to_list() == [100, 200]
+
+
+def test_load_accepts_current_schema_version(tmp_path):
+    _write(tmp_path)
+    loaded = DatasetBundle.load(tmp_path / "bundle")
+    assert loaded.manifest.schema_version == "1"
+
+
+def test_load_rejects_mismatched_schema_version(tmp_path):
+    _write(tmp_path)
+    manifest_path = tmp_path / "bundle" / MANIFEST_FILENAME
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["schema_version"] = "2"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(BundleIntegrityError) as excinfo:
+        DatasetBundle.load(tmp_path / "bundle")
+    message = str(excinfo.value)
+    assert "'2'" in message
+    assert "'1'" in message
 
 
 def test_failed_write_with_unknown_granularity_does_not_destroy_existing_bundle(tmp_path):

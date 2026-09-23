@@ -143,7 +143,14 @@ class DatasetBundle:
     @classmethod
     def load(cls, root: Path) -> DatasetBundle:
         root = Path(root)
-        return cls(root, Manifest.read(root / MANIFEST_FILENAME))
+        manifest = Manifest.read(root / MANIFEST_FILENAME)
+        if manifest.schema_version != SCHEMA_VERSION:
+            raise BundleIntegrityError(
+                f"bundle {root} has schema_version {manifest.schema_version!r}, but this "
+                f"build only supports schema_version {SCHEMA_VERSION!r}: the manifest may "
+                "describe a data layout this code does not understand"
+            )
+        return cls(root, manifest)
 
     def validate(self) -> None:
         for rel, expected in sorted(self.manifest.files.items()):
