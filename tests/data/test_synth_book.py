@@ -1,5 +1,6 @@
 import numpy as np
 import polars as pl
+import pytest
 
 from quantic.data.schemas import L3Action, validate
 from quantic.data.synth import SynthConfig, build_l3_and_l2, generate_buckets, generate_bundle
@@ -123,10 +124,41 @@ def _replay_l3_and_count_l2_mismatches(l3: pl.DataFrame, l2: pl.DataFrame, cfg: 
     return mismatches
 
 
-def test_l3_replay_reproduces_l2_at_default_scale():
-    cfg = SynthConfig(symbols=("SYNA",), n_days=20, buckets_per_day=13, seed=0)
-    l3, l2 = build_l3_and_l2(generate_buckets(cfg), cfg)
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        SynthConfig(symbols=("SYNA",), n_days=20, buckets_per_day=13, seed=0),
+        # depth_levels=4 -> per-side capacity 4,000, against buy_vol/sell_vol
+        # that reach ~5,900: this config is chosen to force _execute_against's
+        # mid-execution replenish branch to actually run (R22).
+        SynthConfig(symbols=("SYNA",), n_days=20, buckets_per_day=13, seed=0, depth_levels=4),
+    ],
+    ids=["depth10-no-replenish", "depth4-forces-replenish"],
+)
+def test_l3_replay_reproduces_l2_at_default_scale(cfg):
+    buckets = generate_buckets(cfg)
+    l3, l2 = build_l3_and_l2(buckets, cfg)
     assert _replay_l3_and_count_l2_mismatches(l3, l2, cfg) == 0
+
+    # Prove (rather than assume) that the depth_levels=4 config actually drives
+    # execution past per-side capacity, so the mismatch check above is known to
+    # have exercised _execute_against's replenish branch and not just the plain
+    # execute path.
+    capacity = cfg.depth_levels * cfg.level_size
+    replenish_triggers = 0
+    for row in buckets.iter_rows(named=True):
+        volume = row["bucket_volume"]
+        net = int(round(row["net_flow"]))
+        buy_vol = (volume + net) // 2
+        sell_vol = volume - buy_vol
+        if buy_vol > capacity or sell_vol > capacity:
+            replenish_triggers += 1
+
+    if cfg.depth_levels == 4:
+        assert replenish_triggers >= 10, (
+            "expected the replenish-forcing config to exceed per-side capacity "
+            f"in at least 10 buckets, got {replenish_triggers}"
+        )
 
 
 def test_signed_flow_recovers_true_participation(tmp_path):
