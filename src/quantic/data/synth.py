@@ -36,11 +36,11 @@ class SynthConfig:
     start_date: dt.date = dt.date(2026, 1, 5)
     base_price: float = 100.0
     daily_vol: float = 0.02
-    adv_shares: int = 5_000_000
+    adv_shares: int = 100_000
     tick_size: float = 0.01
     lot_size: int = 100
     depth_levels: int = 10
-    level_size: int = 500
+    level_size: int = 1_000
     flow_sd: float = 0.08
     # Diffusion noise as a multiple of sigma_bucket. The default of 1.0 is the
     # realistic regime: mid returns are dominated by diffusion and impact is a
@@ -279,6 +279,53 @@ class _MessageLog:
         self._offset += 1
 
 
+def _execute_against(
+    book: _GeneratorBook,
+    log: _MessageLog,
+    side: str,
+    qty: int,
+    desired: dict[str, list[float]],
+    cfg: SynthConfig,
+    next_order_id: int,
+) -> int:
+    """Execute ``qty`` shares against ``side``, replenishing mid-execution if exhausted.
+
+    Real feeds trade two-sided volume every bucket, and once bucket volume is
+    realistic a single side rarely holds the full requested quantity. This
+    walks outward from the touch, and whenever the side runs dry before
+    ``qty`` is filled, tops the desired levels back up and keeps consuming.
+    Every replenishment is emitted as an ``add`` message so the L3 stream
+    fully explains the resulting book state (the R14/R19 invariant that
+    l2_depth must be reproducible by replaying l3_messages alone).
+    """
+    remaining = qty
+    while remaining > 0:
+        progressed = False
+        for px in book.prices(side):
+            if remaining <= 0:
+                break
+            for order_id, size in sorted(book.levels[side][px].items()):
+                if remaining <= 0:
+                    break
+                taken = min(size, remaining)
+                log.emit(L3Action.EXECUTE.value, side, px, taken, order_id)
+                book.reduce(side, px, order_id, taken)
+                remaining -= taken
+                progressed = True
+        if remaining <= 0:
+            break
+        # Side exhausted before qty was filled: replenish desired levels and continue.
+        for px in desired[side]:
+            if book.size_at(side, px) == 0:
+                log.emit(L3Action.ADD.value, side, px, cfg.level_size, next_order_id)
+                book.add(side, px, next_order_id, cfg.level_size)
+                next_order_id += 1
+                progressed = True
+        if not progressed:
+            break  # safety valve; desired always has capacity so this should not trigger
+    return next_order_id
+
+
 def build_l3_and_l2(buckets: pl.DataFrame, cfg: SynthConfig) -> tuple[pl.DataFrame, pl.DataFrame]:
     tick = cfg.tick_size
     replace_every = 3
@@ -318,19 +365,21 @@ def build_l3_and_l2(buckets: pl.DataFrame, cfg: SynthConfig) -> tuple[pl.DataFra
                         book.add(side, px, next_order_id, cfg.level_size)
                         next_order_id += 1
 
-            # 3. execute against the resting side
-            hit_side = "sell" if row["net_flow"] > 0 else "buy"
-            remaining = int(abs(round(row["net_flow"])))
-            for px in book.prices(hit_side):
-                if remaining <= 0:
-                    break
-                for order_id, size in sorted(book.levels[hit_side][px].items()):
-                    if remaining <= 0:
-                        break
-                    taken = min(size, remaining)
-                    log.emit(L3Action.EXECUTE.value, hit_side, px, taken, order_id)
-                    book.reduce(hit_side, px, order_id, taken)
-                    remaining -= taken
+            # 3. execute two-sided volume: buyers lifting the offer trade on the
+            # sell side (positive flow), sellers hitting the bid trade on the buy
+            # side (negative flow). signed_order_flow recovers net_flow as the
+            # difference and bucket_volume as the total, so participation is
+            # recovered rather than pinned at +-1 (Ruling R19).
+            volume = row["bucket_volume"]
+            net = int(round(row["net_flow"]))
+            buy_vol = (volume + net) // 2
+            sell_vol = volume - buy_vol
+            next_order_id = _execute_against(
+                book, log, "sell", buy_vol, desired, cfg, next_order_id
+            )
+            next_order_id = _execute_against(
+                book, log, "buy", sell_vol, desired, cfg, next_order_id
+            )
 
             # 4. replenish depleted levels
             for side in ("buy", "sell"):

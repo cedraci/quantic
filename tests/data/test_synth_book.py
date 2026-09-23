@@ -1,7 +1,9 @@
+import numpy as np
 import polars as pl
 
 from quantic.data.schemas import L3Action, validate
 from quantic.data.synth import SynthConfig, build_l3_and_l2, generate_buckets, generate_bundle
+from quantic.micro.liquidity import signed_order_flow
 
 CFG = SynthConfig(symbols=("SYNA", "SYNB"), n_days=3, buckets_per_day=4, seed=3, depth_levels=5)
 
@@ -125,3 +127,34 @@ def test_l3_replay_reproduces_l2_at_default_scale():
     cfg = SynthConfig(symbols=("SYNA",), n_days=20, buckets_per_day=13, seed=0)
     l3, l2 = build_l3_and_l2(generate_buckets(cfg), cfg)
     assert _replay_l3_and_count_l2_mismatches(l3, l2, cfg) == 0
+
+
+def test_signed_flow_recovers_true_participation(tmp_path):
+    """R19 guard: two-sided execution must recover the true participation `f`.
+
+    Single-sided execution (pre-R19) pins observed participation at +-1 every
+    bucket, which is what made Task 16's calibration on log|participation|
+    unachievable (zero-variance regressor, SVD did not converge).
+    """
+    cfg = SynthConfig(symbols=("SYNA",), n_days=20, buckets_per_day=13, seed=0)
+    bucket_ns = (23_400 // cfg.buckets_per_day) * 1_000_000_000
+
+    bundle = generate_bundle(tmp_path / "synth", cfg)
+    flow = signed_order_flow(bundle.l3(), bucket_ns=bucket_ns).select(
+        "symbol", "bucket_id", pl.col("participation").alias("observed_participation")
+    )
+
+    buckets = generate_buckets(cfg).with_columns(
+        (pl.col("ts_start_ns") // bucket_ns).alias("bucket_id")
+    ).select("symbol", "bucket_id", pl.col("participation").alias("true_participation"))
+
+    joined = flow.join(buckets, on=["symbol", "bucket_id"], how="inner")
+    assert joined.height == cfg.n_days * cfg.buckets_per_day
+
+    obs = np.asarray(joined["observed_participation"].to_list())
+    tru = np.asarray(joined["true_participation"].to_list())
+    corr = float(np.corrcoef(obs, tru)[0, 1])
+    max_abs_diff = float(np.max(np.abs(obs - tru)))
+
+    assert corr > 0.99
+    assert max_abs_diff < 0.02
