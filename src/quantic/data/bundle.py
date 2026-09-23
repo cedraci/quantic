@@ -139,12 +139,22 @@ class DatasetBundle:
                 f"recomputed {recomputed}"
             )
 
+        tracked = set(self.manifest.files)
+        on_disk = {p.relative_to(self.root).as_posix() for p in self.root.rglob("*.parquet")}
+        untracked = sorted(on_disk - tracked)
+        if untracked:
+            raise BundleIntegrityError(
+                f"untracked file(s) found in bundle {self.root} "
+                f"(present on disk but not in manifest): {', '.join(untracked)}"
+            )
+
     def table(self, name: str) -> pl.DataFrame:
         if name not in SCHEMAS:
             raise KeyError(f"unknown granularity {name!r}")
         if name not in self.manifest.granularities:
             raise KeyError(f"bundle {self.manifest.bundle_id} has no {name!r} table")
-        files = sorted((self.root / name).rglob("*.parquet"))
+        rels = sorted(rel for rel in self.manifest.files if rel.startswith(f"{name}/"))
+        files = [self.root / rel for rel in rels]
         return pl.read_parquet(files).sort(SORT_KEYS[name])
 
     def l1(self) -> pl.DataFrame:

@@ -39,6 +39,21 @@ def _l1() -> pl.DataFrame:
     )
 
 
+def _l1_two_symbols() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "ts_ns": pl.Series([200, 100, 150], dtype=pl.Int64),
+            "symbol": pl.Series(["SYNA", "SYNA", "SYNB"], dtype=pl.Utf8),
+            "bid": pl.Series([49.99, 49.98, 60.0], dtype=pl.Float64),
+            "ask": pl.Series([50.01, 50.00, 60.02], dtype=pl.Float64),
+            "bid_size": pl.Series([500, 500, 500], dtype=pl.Int64),
+            "ask_size": pl.Series([500, 500, 500], dtype=pl.Int64),
+            "last_px": pl.Series([50.0, 49.99, 60.01], dtype=pl.Float64),
+            "last_size": pl.Series([100, 100, 100], dtype=pl.Int64),
+        }
+    )
+
+
 def _write(tmp_path) -> DatasetBundle:
     return DatasetBundle.write(
         tmp_path / "bundle",
@@ -133,3 +148,62 @@ def test_write_requires_daily_bars(tmp_path):
             bundle_id="nodaily",
             provenance="unit-test",
         )
+
+
+def _inject_untracked_l1_partition(root, symbol: str = "ZZZZ") -> None:
+    """Drop a schema-conforming l1_taq partition directly onto disk, bypassing
+    ``DatasetBundle.write`` so it is never recorded in the manifest."""
+    df = pl.DataFrame(
+        {
+            "ts_ns": pl.Series([999], dtype=pl.Int64),
+            "symbol": pl.Series([symbol], dtype=pl.Utf8),
+            "bid": pl.Series([1.0], dtype=pl.Float64),
+            "ask": pl.Series([1.1], dtype=pl.Float64),
+            "bid_size": pl.Series([1], dtype=pl.Int64),
+            "ask_size": pl.Series([1], dtype=pl.Int64),
+            "last_px": pl.Series([1.05], dtype=pl.Float64),
+            "last_size": pl.Series([1], dtype=pl.Int64),
+        }
+    )
+    dest_dir = root / "l1_taq" / f"symbol={symbol}"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(dest_dir / "part.parquet", compression="zstd")
+
+
+def test_validate_detects_untracked_file(tmp_path):
+    _write(tmp_path)
+    root = tmp_path / "bundle"
+    _inject_untracked_l1_partition(root)
+
+    with pytest.raises(BundleIntegrityError, match="untracked"):
+        DatasetBundle.load(root).validate()
+
+
+def test_table_ignores_untracked_file(tmp_path):
+    _write(tmp_path)
+    root = tmp_path / "bundle"
+    _inject_untracked_l1_partition(root)
+
+    l1 = DatasetBundle.load(root).l1()
+    assert set(l1["symbol"].to_list()) == {"SYNA"}
+    assert "ZZZZ" not in l1["symbol"].to_list()
+
+
+def test_rewriting_bundle_with_fewer_symbols_does_not_leak_stale_partitions(tmp_path):
+    root = tmp_path / "bundle"
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily(), "l1_taq": _l1_two_symbols()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily().filter(pl.col("symbol") == "SYNA"), "l1_taq": _l1()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+
+    loaded = DatasetBundle.load(root)
+    assert loaded.symbols == ("SYNA",)
+    assert set(loaded.l1()["symbol"].to_list()) == {"SYNA"}
