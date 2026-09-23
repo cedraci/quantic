@@ -72,3 +72,40 @@ def test_short_history_is_rejected():
 def test_unknown_method_is_rejected():
     with pytest.raises(ValueError, match="unknown method"):
         estimate_covariance(_daily(), method="wishful")
+
+
+def _daily_with_bad_close(bad_value: float, n_days: int = 30, n_symbols: int = 2) -> pl.DataFrame:
+    """A clean frame with one symbol's close overwritten mid-series.
+
+    Overwriting a middle date (not the first or last) guarantees the bad value
+    poisons two consecutive log returns for that symbol, not zero.
+    """
+    daily = _daily(n_days=n_days, n_symbols=n_symbols, seed=1)
+    dates = sorted(daily["date"].unique().to_list())
+    target_date = dates[n_days // 2]
+    return daily.with_columns(
+        pl.when((pl.col("symbol") == "S0") & (pl.col("date") == target_date))
+        .then(pl.lit(bad_value))
+        .otherwise(pl.col("close"))
+        .alias("close")
+    )
+
+
+@pytest.mark.parametrize("method", ["ledoit_wolf", "sample"])
+def test_zeroed_close_raises_with_named_symbol(method: str):
+    daily = _daily_with_bad_close(0.0)
+    with pytest.raises(InsufficientHistoryError, match="S0"):
+        estimate_covariance(daily, method=method)
+
+
+@pytest.mark.parametrize("method", ["ledoit_wolf", "sample"])
+def test_negative_close_raises_with_named_symbol(method: str):
+    daily = _daily_with_bad_close(-5.0)
+    with pytest.raises(InsufficientHistoryError, match="S0"):
+        estimate_covariance(daily, method=method)
+
+
+@pytest.mark.parametrize("method", ["ledoit_wolf", "sample"])
+def test_clean_frame_still_works_for_both_methods(method: str):
+    est = estimate_covariance(_daily(n_days=30, n_symbols=2), method=method)
+    assert np.isfinite(est.matrix).all()

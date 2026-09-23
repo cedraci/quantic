@@ -55,6 +55,19 @@ def estimate_covariance(
     symbols = tuple(c for c in returns.columns if c != "date")
     values = returns.select(symbols).to_numpy()
 
+    if not np.isfinite(values).all():
+        bad_counts = {
+            symbol: int((~np.isfinite(values[:, j])).sum())
+            for j, symbol in enumerate(symbols)
+            if not np.isfinite(values[:, j]).all()
+        }
+        detail = ", ".join(f"{sym}: {n} non-finite" for sym, n in bad_counts.items())
+        raise InsufficientHistoryError(
+            f"non-finite log returns for {detail} (out of {values.shape[0]} observations); "
+            "a zero or negative close in the underlying daily bars produces -inf/NaN "
+            "returns that must not be silently fed into covariance estimation"
+        )
+
     if values.shape[0] < MIN_OBSERVATIONS:
         raise InsufficientHistoryError(
             f"need at least {MIN_OBSERVATIONS} return observations, got {values.shape[0]}"
