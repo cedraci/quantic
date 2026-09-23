@@ -25,7 +25,7 @@ from quantic.data.manifest import (
     compute_content_hash,
     sha256_file,
 )
-from quantic.data.schemas import SCHEMA_VERSION, SCHEMAS, validate
+from quantic.data.schemas import SCHEMA_VERSION, SCHEMAS, validate, validate_values
 
 # Canonical row ordering. Bundles are content-hashed, so ordering is part of
 # the data's identity and must not depend on how a caller happened to build it.
@@ -83,7 +83,9 @@ class DatasetBundle:
         prepared: dict[str, pl.DataFrame] = {}
         for name in sorted(tables):
             df = tables[name].sort(SORT_KEYS[name])
-            validate(name, df.to_arrow())
+            arrow = df.to_arrow()
+            validate(name, arrow)
+            validate_values(name, arrow)
             prepared[name] = df
 
         # A bundle directory must contain exactly what its manifest describes,

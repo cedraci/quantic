@@ -13,6 +13,7 @@ from rich.table import Table
 from quantic.data.bundle import DatasetBundle
 from quantic.data.catalog import DEFAULT_CATALOG_PATH, Catalog
 from quantic.data.request import default_request
+from quantic.data.schemas import validate_values
 from quantic.data.synth import SynthConfig, generate_bundle
 
 app = typer.Typer(help="Quantic: quantum vs classical liquidation benchmarking.")
@@ -63,6 +64,8 @@ def ingest(
     bundle = DatasetBundle.load(path)
     try:
         bundle.validate()
+        for name in bundle.manifest.granularities:
+            validate_values(name, bundle.table(name).to_arrow())
     except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the operator
         console.print(f"[red]integrity check failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc

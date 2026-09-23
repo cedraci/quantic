@@ -100,7 +100,9 @@ def test_content_hash_is_stable_across_identical_writes(tmp_path):
 
 def test_content_hash_changes_when_data_changes(tmp_path):
     a = _write(tmp_path)
-    changed = _daily().with_columns(pl.col("close") + 1.0)
+    # +0.1, not +1.0: a larger bump would push some rows' close above their
+    # high, tripping validate_values' max(open, close) <= high invariant.
+    changed = _daily().with_columns(pl.col("close") + 0.1)
     b = DatasetBundle.write(
         tmp_path / "bundle3",
         {"daily_bars": changed, "l1_taq": _l1()},
@@ -138,6 +140,19 @@ def test_write_rejects_nonconforming_table(tmp_path):
             tmp_path / "bad",
             {"daily_bars": _daily(), "l1_taq": bad},
             bundle_id="bad",
+            provenance="unit-test",
+        )
+
+
+def test_write_rejects_value_invalid_table(tmp_path):
+    from quantic.data.schemas import SchemaError
+
+    bad = _l1().with_columns(pl.col("bid_size").mul(0).sub(5))  # -5
+    with pytest.raises(SchemaError):
+        DatasetBundle.write(
+            tmp_path / "bad_values",
+            {"daily_bars": _daily(), "l1_taq": bad},
+            bundle_id="bad_values",
             provenance="unit-test",
         )
 
@@ -282,6 +297,31 @@ def test_failed_write_does_not_destroy_existing_bundle(tmp_path):
     )
 
     bad = _l1().drop("last_size")
+    with pytest.raises(SchemaError):
+        DatasetBundle.write(
+            root,
+            {"daily_bars": _daily(), "l1_taq": bad},
+            bundle_id="test-bundle",
+            provenance="unit-test",
+        )
+
+    loaded = DatasetBundle.load(root)
+    loaded.validate()  # must not raise: the original good bundle survives
+    assert loaded.l1()["ts_ns"].to_list() == [100, 200]
+
+
+def test_failed_write_with_value_invalid_table_does_not_destroy_existing_bundle(tmp_path):
+    from quantic.data.schemas import SchemaError
+
+    root = tmp_path / "bundle"
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily(), "l1_taq": _l1()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+
+    bad = _l1().with_columns(pl.col("bid_size").mul(0).sub(5))  # -5
     with pytest.raises(SchemaError):
         DatasetBundle.write(
             root,
