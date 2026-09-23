@@ -1,0 +1,74 @@
+import polars as pl
+import pytest
+
+from quantic.data.synth import SynthConfig, generate_bundle
+from quantic.micro.validation import compare_to_l2
+
+CFG = SynthConfig(
+    symbols=("SYNA", "SYNB"), n_days=3, buckets_per_day=6, seed=11, depth_levels=6
+)
+
+DEFAULT_SCALE = SynthConfig(
+    symbols=("SYNA", "SYNB"), n_days=20, buckets_per_day=13, seed=11, depth_levels=6
+)
+
+
+@pytest.fixture(scope="module")
+def bundle(tmp_path_factory):
+    return generate_bundle(tmp_path_factory.mktemp("gate") / "synth", CFG)
+
+
+@pytest.fixture(scope="module")
+def default_scale_bundle(tmp_path_factory):
+    return generate_bundle(tmp_path_factory.mktemp("gate_scale") / "synth", DEFAULT_SCALE)
+
+
+def test_reconstruction_matches_l2_exactly(bundle):
+    """THE M1 GATE: an independent replay of L3 reproduces every L2 snapshot."""
+    mismatches = compare_to_l2(bundle.l3(), bundle.l2(), levels=CFG.depth_levels)
+    assert mismatches == [], mismatches[:10]
+
+
+def test_gate_covers_every_snapshot(bundle):
+    l2 = bundle.l2()
+    expected = l2.select("symbol", "ts_ns").unique().height
+    assert expected == len(CFG.symbols) * CFG.n_days * CFG.buckets_per_day
+
+
+def test_comparator_detects_an_injected_size_error(bundle):
+    corrupted = bundle.l2().with_columns(
+        pl.when((pl.col("level") == 0) & (pl.col("side") == "buy"))
+        .then(pl.col("size") + 7)
+        .otherwise(pl.col("size"))
+        .alias("size")
+    )
+    mismatches = compare_to_l2(bundle.l3(), corrupted, levels=CFG.depth_levels)
+    assert mismatches
+    assert all(m.field == "size" for m in mismatches)
+
+
+def test_comparator_detects_an_injected_price_error(bundle):
+    corrupted = bundle.l2().with_columns(
+        pl.when((pl.col("level") == 0) & (pl.col("side") == "sell"))
+        .then(pl.col("px") + 0.05)
+        .otherwise(pl.col("px"))
+        .alias("px")
+    )
+    mismatches = compare_to_l2(bundle.l3(), corrupted, levels=CFG.depth_levels)
+    assert mismatches
+    assert any(m.field == "px" for m in mismatches)
+
+
+def test_comparator_can_be_restricted_to_symbols(bundle):
+    mismatches = compare_to_l2(
+        bundle.l3(), bundle.l2(), levels=CFG.depth_levels, symbols=["SYNA"]
+    )
+    assert mismatches == []
+
+
+def test_reconstruction_matches_l2_at_default_scale(default_scale_bundle):
+    """The gate must hold at realistic scale, not only on a toy config."""
+    mismatches = compare_to_l2(
+        default_scale_bundle.l3(), default_scale_bundle.l2(), levels=DEFAULT_SCALE.depth_levels
+    )
+    assert mismatches == [], mismatches[:10]
