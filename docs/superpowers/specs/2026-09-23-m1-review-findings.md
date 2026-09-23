@@ -104,3 +104,48 @@ Needed: one `session_bucket_id(ts_ns, calendar, bucket_ns)` helper, one source o
 - `Catalog.register` returns a stale entry on idempotent re-register if the bundle moved.
 - `bundle.py` carries a `# type: ignore` with no type checker configured.
 - `_execute_against`'s `if not progressed: break` under-executes silently; it should raise.
+
+---
+
+## 4. Findings from the first data-forging exercise (2026-09-23)
+
+Four synthetic bundles were generated and the full analytics stack run against them. Everything passed, but two structural problems surfaced that only appear at realistic scale.
+
+### 4.1 No single synthetic config can validate both `delta` and `Y` end-to-end
+
+The generator injects impact as `Y * sigma_bucket * sign(f) * |f|^delta`, where `sigma_bucket` is the **configured** `daily_vol / sqrt(buckets_per_day)`. But the realised volatility of the emitted mid series only equals that when `noise_frac ~ 1.0`, because `noise_frac` scales the diffusion term without compensating elsewhere. Measured:
+
+| bundle | `noise_frac` | configured `sigma_bucket` | realised | `estimate_bucket_sigma` | est/configured |
+|---|---|---|---|---|---|
+| `calib` | 0.05 | 0.005547 | 0.001131 | 0.001158 | **0.21x** |
+| `bench25` | 1.0 | 0.005547 | 0.005671 | 0.005265 | 0.95x |
+
+`estimate_bucket_sigma` is **correct in both cases** — it measures realised volatility to within 2%. The fiction is `ground_truth()["sigma_bucket"]`, which reports the configured value regardless of `noise_frac`.
+
+Consequence, measured on `calib`: supplying the (correct) estimated sigma inflates the recovered `Y` by 357–464%, while `delta` is unaffected — sigma is a constant divisor inside `log(mean_impact / sigma)`, so it shifts the intercept but not the slope.
+
+So `Y` is only recoverable through the production path at `noise_frac ~ 1.0`, which is precisely the regime where `delta` is **not** recoverable (see 4.2). The two cannot currently be validated in the same bundle.
+
+**Recommended fix:** hold total bucket variance at `sigma_bucket^2` and let `noise_frac` control the split between impact and diffusion, rather than scaling diffusion alone. Realised volatility then equals the configured value at every noise level, and both parameters become validatable anywhere.
+
+### 4.2 The calibration limitation is more severe at realistic noise than the ledger's ranges suggested
+
+`bench25` (25 symbols, 20 days, `noise_frac=1.0`, 240 observations/symbol), sigma supplied as the true value:
+
+- max `|delta error|` = **1.763**; 6 of 25 symbols recovered a **negative** delta
+- `r_squared` below 0.05 for 8 of 25 symbols
+- SYN07 recovered `delta = 2.263`, which is outside `PowerLawImpact`'s valid `(0, 1]` — `CalibrationResult` constructs happily and `to_model()` then raises. This is finding I6 occurring on ordinary generated data rather than a crafted fixture.
+
+Earlier measurements put realistic-noise recovery at 0.13–0.26 error; those used 1800–3600 observations per symbol. At the spec's own 20-day shape (240 observations) the estimator is not merely imprecise, it is unusable. Calibration at realistic noise needs a substantially longer history than spec section 8.4 requests, or the direct non-linear fit from section 2.3.
+
+### 4.3 Quantified: `compare_to_l2` throughput
+
+Confirmed finding I9 at scale: 6,500 snapshots across 25 symbols took **23.4s (278 snapshots/s)**, with zero mismatches. The per-timestamp filter inside the loop dominates. One liquid US name is O(10^6) messages/day, so this needs the `partition_by` fix before real L3 arrives.
+
+### 4.4 Generation cost is superlinear in days
+
+3 symbols x 20 days ~ 1.7s; 25 x 20 ~ 7s; 25 x 252 took **8m47s** — roughly 10x the time for 12.6x the buckets, but measured against a 25 x 20 baseline it is materially worse than linear. Acceptable for fixtures; worth knowing before generating multi-year data.
+
+### 4.5 The CLI cannot reach the knobs that matter
+
+`quantic data synth` exposes 5 of `SynthConfig`'s 16 fields. `noise_frac`, `base_price`, `daily_vol`, `adv_shares`, `level_size` and `flow_sd` are unreachable, so the calibration-grade fixture had to be built with a Python script. `noise_frac` in particular is the single knob that decides whether impact calibration works at all.

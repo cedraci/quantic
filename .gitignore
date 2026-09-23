@@ -18,3 +18,6 @@ results/*.duckdb
 
 # SDD workspace (scratch)
 .superpowers/
+data/catalog.json
+.import_linter_cache/
+.hypothesis/
