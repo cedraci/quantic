@@ -12,6 +12,7 @@ Layout::
 from __future__ import annotations
 
 import datetime as dt
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -72,7 +73,19 @@ class DatasetBundle:
                 "covariance estimation derive from it"
             )
 
+        # A bundle directory must contain exactly what its manifest describes,
+        # because validate() treats any untracked parquet as an integrity
+        # failure. Clear every granularity subdirectory (not just the ones in
+        # `tables`) before writing, so a rewrite that drops a symbol or an
+        # entire granularity can never leave a stale, untracked partition
+        # behind. This runs after the daily_bars check above so a rejected
+        # call destroys nothing.
         root.mkdir(parents=True, exist_ok=True)
+        for name in SCHEMAS:
+            stale = root / name
+            if stale.exists():
+                shutil.rmtree(stale, ignore_errors=False)
+
         file_hashes: dict[str, str] = {}
         symbols: set[str] = set()
 

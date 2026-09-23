@@ -207,3 +207,62 @@ def test_rewriting_bundle_with_fewer_symbols_does_not_leak_stale_partitions(tmp_
     loaded = DatasetBundle.load(root)
     assert loaded.symbols == ("SYNA",)
     assert set(loaded.l1()["symbol"].to_list()) == {"SYNA"}
+
+
+def test_rewrite_leaves_bundle_validatable(tmp_path):
+    root = tmp_path / "bundle"
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily(), "l1_taq": _l1_two_symbols()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily().filter(pl.col("symbol") == "SYNA"), "l1_taq": _l1()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+
+    loaded = DatasetBundle.load(root)
+    loaded.validate()  # must not raise
+    assert loaded.symbols == ("SYNA",)
+    assert not (root / "l1_taq" / "symbol=SYNB" / "part.parquet").exists()
+
+
+def test_rewrite_dropping_a_granularity_leaves_bundle_validatable(tmp_path):
+    root = tmp_path / "bundle"
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily(), "l1_taq": _l1()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+
+    loaded = DatasetBundle.load(root)
+    loaded.validate()  # must not raise
+    assert not (root / "l1_taq").exists()
+
+
+def test_write_preserves_unrelated_files_in_target_directory(tmp_path):
+    root = tmp_path / "bundle"
+    root.mkdir(parents=True)
+    (root / "README.txt").write_text("keep me")
+    (root / "notes").mkdir()
+    (root / "notes" / "keep.md").write_text("keep me too")
+
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily(), "l1_taq": _l1()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+
+    assert (root / "README.txt").read_text() == "keep me"
+    assert (root / "notes" / "keep.md").read_text() == "keep me too"
