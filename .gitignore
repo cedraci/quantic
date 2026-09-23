@@ -15,3 +15,6 @@ data/bundles/
 results/*.duckdb
 .embedding_cache/
 .quota/
+
+# SDD workspace (scratch)
+.superpowers/
