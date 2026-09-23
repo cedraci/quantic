@@ -73,13 +73,25 @@ class DatasetBundle:
                 "covariance estimation derive from it"
             )
 
+        # Nothing is deleted until every table has been validated. write() can
+        # reject input in two ways: a table that fails schema validation, or a
+        # table under an unknown granularity name (SORT_KEYS[name] raises
+        # KeyError for that case). Both must be caught before any destructive
+        # filesystem call, or a caller who passes one bad table alongside
+        # otherwise-good data would destroy an existing good bundle and leave
+        # a stale manifest.json pointing at files that no longer exist.
+        prepared: dict[str, pl.DataFrame] = {}
+        for name in sorted(tables):
+            df = tables[name].sort(SORT_KEYS[name])
+            validate(name, df.to_arrow())
+            prepared[name] = df
+
         # A bundle directory must contain exactly what its manifest describes,
         # because validate() treats any untracked parquet as an integrity
         # failure. Clear every granularity subdirectory (not just the ones in
         # `tables`) before writing, so a rewrite that drops a symbol or an
         # entire granularity can never leave a stale, untracked partition
-        # behind. This runs after the daily_bars check above so a rejected
-        # call destroys nothing.
+        # behind. This only runs after every table above has been validated.
         root.mkdir(parents=True, exist_ok=True)
         for name in SCHEMAS:
             stale = root / name
@@ -89,9 +101,7 @@ class DatasetBundle:
         file_hashes: dict[str, str] = {}
         symbols: set[str] = set()
 
-        for name in sorted(tables):
-            df = tables[name].sort(SORT_KEYS[name])
-            validate(name, df.to_arrow())
+        for name, df in prepared.items():
             symbols.update(df["symbol"].unique().to_list())
 
             if name in _PARTITIONED:
@@ -110,7 +120,7 @@ class DatasetBundle:
                 df.write_parquet(dest, compression="zstd")
                 file_hashes[rel] = sha256_file(dest)
 
-        daily = tables["daily_bars"]
+        daily = prepared["daily_bars"]
         start: dt.date = daily["date"].min()  # type: ignore[assignment]
         end: dt.date = daily["date"].max()  # type: ignore[assignment]
 
@@ -122,7 +132,7 @@ class DatasetBundle:
             symbols=tuple(sorted(symbols)),
             start_date=start.isoformat(),
             end_date=end.isoformat(),
-            granularities=tuple(sorted(tables)),
+            granularities=tuple(sorted(prepared)),
             files=file_hashes,
             content_hash=compute_content_hash(file_hashes),
             extra=dict(extra or {}),

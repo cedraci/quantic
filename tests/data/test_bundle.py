@@ -266,3 +266,50 @@ def test_write_preserves_unrelated_files_in_target_directory(tmp_path):
 
     assert (root / "README.txt").read_text() == "keep me"
     assert (root / "notes" / "keep.md").read_text() == "keep me too"
+
+
+def test_failed_write_does_not_destroy_existing_bundle(tmp_path):
+    from quantic.data.schemas import SchemaError
+
+    root = tmp_path / "bundle"
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily(), "l1_taq": _l1()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+
+    bad = _l1().drop("last_size")
+    with pytest.raises(SchemaError):
+        DatasetBundle.write(
+            root,
+            {"daily_bars": _daily(), "l1_taq": bad},
+            bundle_id="test-bundle",
+            provenance="unit-test",
+        )
+
+    loaded = DatasetBundle.load(root)
+    loaded.validate()  # must not raise: the original good bundle survives
+    assert loaded.l1()["ts_ns"].to_list() == [100, 200]
+
+
+def test_failed_write_with_unknown_granularity_does_not_destroy_existing_bundle(tmp_path):
+    root = tmp_path / "bundle"
+    DatasetBundle.write(
+        root,
+        {"daily_bars": _daily(), "l1_taq": _l1()},
+        bundle_id="test-bundle",
+        provenance="unit-test",
+    )
+
+    with pytest.raises(KeyError):
+        DatasetBundle.write(
+            root,
+            {"daily_bars": _daily(), "l4_telepathy": _l1()},
+            bundle_id="test-bundle",
+            provenance="unit-test",
+        )
+
+    loaded = DatasetBundle.load(root)
+    loaded.validate()  # must not raise: the original good bundle survives
+    assert loaded.l1()["ts_ns"].to_list() == [100, 200]
