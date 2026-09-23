@@ -45,14 +45,23 @@ def compare_to_l2(
     An empty result means the replay reproduces every published snapshot
     exactly, to ``price_tol`` on prices and bit-for-bit on sizes.
     """
-    wanted = sorted(symbols) if symbols is not None else sorted(l2["symbol"].unique().to_list())
+    present = sorted(l2["symbol"].unique().to_list())
+    if symbols is not None:
+        missing = sorted(set(symbols) - set(present))
+        if missing:
+            raise ValueError(f"requested symbols absent from l2: {missing}")
+        wanted = sorted(symbols)
+    else:
+        wanted = present
+
+    if not wanted:
+        raise ValueError("no symbols to compare: symbols=[] or l2 has no rows")
+
     mismatches: list[ReconstructionMismatch] = []
 
     for symbol in wanted:
         sym_l2 = l2.filter(pl.col("symbol") == symbol)
         sym_l3 = l3.filter(pl.col("symbol") == symbol)
-        if sym_l2.height == 0:
-            continue
 
         ts_list = sorted(sym_l2["ts_ns"].unique().to_list())
         snaps = snapshots_at(sym_l3, ts_list, levels=levels)

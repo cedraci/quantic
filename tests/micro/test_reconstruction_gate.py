@@ -72,3 +72,28 @@ def test_reconstruction_matches_l2_at_default_scale(default_scale_bundle):
         default_scale_bundle.l3(), default_scale_bundle.l2(), levels=DEFAULT_SCALE.depth_levels
     )
     assert mismatches == [], mismatches[:10]
+
+
+def test_unknown_requested_symbol_raises(bundle):
+    with pytest.raises(ValueError, match="absent"):
+        compare_to_l2(bundle.l3(), bundle.l2(), levels=CFG.depth_levels, symbols=["NONEXISTENT"])
+
+
+def test_empty_l2_raises_rather_than_reporting_clean(bundle):
+    empty_l2 = pl.DataFrame(
+        schema={
+            "ts_ns": pl.Int64,
+            "symbol": pl.String,
+            "side": pl.String,
+            "level": pl.Int32,
+            "px": pl.Float64,
+            "size": pl.Int64,
+        }
+    )
+    with pytest.raises(ValueError):
+        compare_to_l2(bundle.l3(), empty_l2, levels=CFG.depth_levels)
+
+
+def test_empty_symbols_list_raises(bundle):
+    with pytest.raises(ValueError):
+        compare_to_l2(bundle.l3(), bundle.l2(), levels=CFG.depth_levels, symbols=[])
