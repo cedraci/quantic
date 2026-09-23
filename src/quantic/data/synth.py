@@ -344,10 +344,16 @@ def build_l3_and_l2(buckets: pl.DataFrame, cfg: SynthConfig) -> tuple[pl.DataFra
             # 5. exercise the replace path on the deepest bid
             if n % replace_every == 0:
                 px = desired["buy"][-1]
-                order_id = sorted(book.levels["buy"][px])[0]
+                resting = sorted(book.levels["buy"][px].items())
+                keep_id = resting[0][0]
+                # Cancel co-resting orders first: replenish can add a second order_id at
+                # a partially-executed level, and overwriting the level without
+                # cancelling them would make l2_depth unreproducible from l3_messages.
+                for other_id, other_size in resting[1:]:
+                    log.emit(L3Action.CANCEL.value, "buy", px, other_size, other_id)
                 new_size = cfg.level_size + 100
-                log.emit(L3Action.REPLACE.value, "buy", px, new_size, order_id)
-                book.levels["buy"][px] = {order_id: new_size}
+                log.emit(L3Action.REPLACE.value, "buy", px, new_size, keep_id)
+                book.levels["buy"][px] = {keep_id: new_size}
 
             # 6. snapshot
             snap_ts = row["ts_end_ns"] - 1

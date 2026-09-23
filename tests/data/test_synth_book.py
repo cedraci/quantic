@@ -68,3 +68,60 @@ def test_generate_bundle_is_reproducible(tmp_path):
     a = generate_bundle(tmp_path / "a", CFG, bundle_id="fixed")
     b = generate_bundle(tmp_path / "b", CFG, bundle_id="fixed")
     assert a.content_hash == b.content_hash
+
+
+def _replay_l3_and_count_l2_mismatches(l3: pl.DataFrame, l2: pl.DataFrame, cfg: SynthConfig) -> int:
+    """Independently replay ``l3`` messages and count l2 snapshot-sides that disagree.
+
+    Deliberately does not import ``_GeneratorBook`` or anything from
+    ``quantic.micro`` — the point is to verify that ``l2_depth`` is fully
+    reproducible from ``l3_messages`` alone, using only the message
+    semantics (add / cancel / execute / replace).
+    """
+    orders: dict[int, tuple[str, float, int]] = {}
+    messages = l3.sort(["ts_ns", "seq"]).to_dicts()
+    idx = 0
+    mismatches = 0
+
+    for snap_ts in sorted(l2["ts_ns"].unique().to_list()):
+        while idx < len(messages) and messages[idx]["ts_ns"] <= snap_ts:
+            m = messages[idx]
+            oid = m["order_id"]
+            if m["action"] == L3Action.ADD.value:
+                orders[oid] = (m["side"], m["px"], m["size"])
+            elif m["action"] in (L3Action.CANCEL.value, L3Action.EXECUTE.value):
+                if oid in orders:
+                    side, px, size = orders[oid]
+                    size -= m["size"]
+                    if size <= 0:
+                        del orders[oid]
+                    else:
+                        orders[oid] = (side, px, size)
+            elif m["action"] == L3Action.REPLACE.value:
+                orders[oid] = (m["side"], m["px"], m["size"])
+            idx += 1
+
+        for side in ("buy", "sell"):
+            book: dict[float, int] = {}
+            for s, px, size in orders.values():
+                if s == side:
+                    book[px] = book.get(px, 0) + size
+            prices = sorted(book, reverse=(side == "buy"))[: cfg.depth_levels]
+            replayed = [(px, book[px]) for px in prices]
+
+            snap_rows = l2.filter((pl.col("ts_ns") == snap_ts) & (pl.col("side") == side)).sort(
+                "level"
+            )
+            expected = list(
+                zip(snap_rows["px"].to_list(), snap_rows["size"].to_list(), strict=True)
+            )
+            if replayed != expected:
+                mismatches += 1
+
+    return mismatches
+
+
+def test_l3_replay_reproduces_l2_at_default_scale():
+    cfg = SynthConfig(symbols=("SYNA",), n_days=20, buckets_per_day=13, seed=0)
+    l3, l2 = build_l3_and_l2(generate_buckets(cfg), cfg)
+    assert _replay_l3_and_count_l2_mismatches(l3, l2, cfg) == 0
