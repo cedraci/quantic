@@ -98,3 +98,29 @@ def test_resiliency_halflife_recovers_a_known_decay():
 def test_resiliency_halflife_needs_enough_points():
     with pytest.raises(InsufficientDataError):
         resiliency_halflife(np.array([0.0, 1.0]), np.array([0.02, 0.01]))
+
+
+def test_resiliency_halflife_rejects_constant_series():
+    elapsed = np.linspace(0, 1e10, 60)
+    spreads = np.full(60, 0.02)
+    with pytest.raises(InsufficientDataError, match="constant"):
+        resiliency_halflife(elapsed, spreads)
+
+
+def test_resiliency_halflife_rejects_pure_noise():
+    elapsed = np.linspace(0, 1e10, 60)
+    rng = np.random.default_rng(42)
+    spreads = 0.02 + rng.normal(0, 0.005, 60)
+    with pytest.raises(InsufficientDataError):
+        resiliency_halflife(elapsed, spreads)
+
+
+def test_resiliency_halflife_tolerates_noisy_decay():
+    tau = 5.0e9  # 5 seconds in nanoseconds
+    elapsed = np.linspace(0.0, 4 * tau, 60)
+    spreads = 0.01 + 0.03 * np.exp(-elapsed / tau)
+    # Add modest noise (5% of amplitude)
+    rng = np.random.default_rng(42)
+    spreads = spreads + rng.normal(0, 0.03 * 0.05, 60)
+    result = resiliency_halflife(elapsed, spreads)
+    assert result == pytest.approx(tau * np.log(2), rel=0.20)

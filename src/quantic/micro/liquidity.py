@@ -100,7 +100,9 @@ def _decay(t: np.ndarray, s_inf: float, amplitude: float, tau: float) -> np.ndar
     return s_inf + amplitude * np.exp(-t / tau)
 
 
-def resiliency_halflife(elapsed_ns: np.ndarray, spreads: np.ndarray) -> float:
+def resiliency_halflife(
+    elapsed_ns: np.ndarray, spreads: np.ndarray, *, min_r_squared: float = 0.5
+) -> float:
     """Half-life, in nanoseconds, of spread decay back towards its floor."""
     elapsed_ns = np.asarray(elapsed_ns, dtype=float)
     spreads = np.asarray(spreads, dtype=float)
@@ -108,6 +110,11 @@ def resiliency_halflife(elapsed_ns: np.ndarray, spreads: np.ndarray) -> float:
         raise InsufficientDataError(
             f"need at least 5 observations to fit a decay, got {elapsed_ns.size}"
         )
+
+    # Check if series is constant (no variation to fit)
+    total_ss = np.sum((spreads - np.mean(spreads)) ** 2)
+    if total_ss < np.finfo(float).eps:
+        raise InsufficientDataError("spread series is constant and there is no decay to fit")
 
     span = max(elapsed_ns.max() - elapsed_ns.min(), 1.0)
     guess = (float(spreads.min()), float(spreads.max() - spreads.min()), span / 4.0)
@@ -118,5 +125,15 @@ def resiliency_halflife(elapsed_ns: np.ndarray, spreads: np.ndarray) -> float:
         )
     except RuntimeError as exc:
         raise InsufficientDataError(f"spread decay fit did not converge: {exc}") from exc
+
+    # Compute R² to validate fit quality
+    predicted = _decay(elapsed_ns, *params)
+    residuals = spreads - predicted
+    residual_ss = np.sum(residuals ** 2)
+    r_squared = 1.0 - (residual_ss / total_ss)
+    if r_squared < min_r_squared:
+        raise InsufficientDataError(
+            f"spread decay fit achieved R²={r_squared:.4f}, below threshold {min_r_squared}"
+        )
 
     return float(params[2] * np.log(2.0))
