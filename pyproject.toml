@@ -42,6 +42,13 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.flake8-bugbear]
+# typer.Option(...)/typer.Argument(...) as parameter defaults is the documented
+# Typer CLI pattern (mirrors FastAPI's Depends/Query, which ruff exempts by
+# default) and is safe: these calls just build immutable option descriptors,
+# not mutable defaults, so B008 would otherwise flag idiomatic cli.py code.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
 [tool.importlinter]
 root_package = "quantic"
 
