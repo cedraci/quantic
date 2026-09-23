@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -29,13 +30,13 @@ def _split(value: str) -> tuple[str, ...]:
 
 @data_app.command("synth")
 def synth(
-    out: Path = typer.Option(..., "--out", help="Directory to write the bundle into."),
-    symbols: str = typer.Option("SYNA,SYNB,SYNC", "--symbols"),
-    days: int = typer.Option(20, "--days"),
-    buckets: int = typer.Option(13, "--buckets"),
-    seed: int = typer.Option(0, "--seed"),
-    depth_levels: int = typer.Option(10, "--depth-levels"),
-    catalog: Path = typer.Option(DEFAULT_CATALOG_PATH, "--catalog"),
+    out: Annotated[Path, typer.Option("--out", help="Directory to write the bundle into.")],
+    symbols: Annotated[str, typer.Option("--symbols")] = "SYNA,SYNB,SYNC",
+    days: Annotated[int, typer.Option("--days")] = 20,
+    buckets: Annotated[int, typer.Option("--buckets")] = 13,
+    seed: Annotated[int, typer.Option("--seed")] = 0,
+    depth_levels: Annotated[int, typer.Option("--depth-levels")] = 10,
+    catalog: Annotated[Path, typer.Option("--catalog")] = DEFAULT_CATALOG_PATH,
 ) -> None:
     """Generate a synthetic bundle with known ground-truth impact parameters."""
     cfg = SynthConfig(
@@ -53,8 +54,10 @@ def synth(
 
 @data_app.command("ingest")
 def ingest(
-    path: Path = typer.Argument(..., help="Bundle directory to validate and register."),
-    catalog: Path = typer.Option(DEFAULT_CATALOG_PATH, "--catalog"),
+    path: Annotated[
+        Path, typer.Argument(help="Bundle directory to validate and register.")
+    ],
+    catalog: Annotated[Path, typer.Option("--catalog")] = DEFAULT_CATALOG_PATH,
 ) -> None:
     """Validate a bundle's integrity and register it in the local catalog."""
     bundle = DatasetBundle.load(path)
@@ -69,7 +72,9 @@ def ingest(
 
 
 @data_app.command("list")
-def list_bundles(catalog: Path = typer.Option(DEFAULT_CATALOG_PATH, "--catalog")) -> None:
+def list_bundles(
+    catalog: Annotated[Path, typer.Option("--catalog")] = DEFAULT_CATALOG_PATH,
+) -> None:
     """List registered bundles."""
     table = Table("bundle_id", "provenance", "symbols", "range", "content_hash")
     for entry in Catalog(catalog).entries():
@@ -85,14 +90,16 @@ def list_bundles(catalog: Path = typer.Option(DEFAULT_CATALOG_PATH, "--catalog")
 
 @data_app.command("request")
 def request(
-    out: Path = typer.Option(..., "--out"),
-    symbols: str = typer.Option(..., "--symbols"),
-    l3_symbols: str = typer.Option(..., "--l3-symbols"),
-    market: str = typer.Option(..., "--market"),
-    l2_days: int = typer.Option(20, "--l2-days"),
-    l3_days: int = typer.Option(5, "--l3-days"),
-    daily_days: int = typer.Option(365, "--daily-days"),
-    end_date: str = typer.Option("", "--end-date", help="ISO date; defaults to today."),
+    out: Annotated[Path, typer.Option("--out")],
+    symbols: Annotated[str, typer.Option("--symbols")],
+    l3_symbols: Annotated[str, typer.Option("--l3-symbols")],
+    market: Annotated[str, typer.Option("--market")],
+    l2_days: Annotated[int, typer.Option("--l2-days")] = 20,
+    l3_days: Annotated[int, typer.Option("--l3-days")] = 5,
+    daily_days: Annotated[int, typer.Option("--daily-days")] = 365,
+    end_date: Annotated[
+        str, typer.Option("--end-date", help="ISO date; defaults to today.")
+    ] = "",
 ) -> None:
     """Emit a data-request spec to hand to the market data machine."""
     end = dt.date.fromisoformat(end_date) if end_date else dt.date.today()
