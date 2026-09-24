@@ -217,6 +217,14 @@ class DatasetBundle:
         if name not in self.manifest.granularities:
             raise KeyError(f"bundle {self.manifest.bundle_id} has no {name!r} table")
         rels = sorted(rel for rel in self.manifest.files if rel.startswith(f"{name}/"))
+        if not rels:
+            # A granularity present in the manifest but holding no rows wrote
+            # no partitions. Real exports routinely contain a granularity with
+            # no rows for some symbol or date range, and polars cannot infer a
+            # schema from an empty file list -- it raises ComputeError. Return
+            # the declared schema with zero rows, which is what the caller
+            # asked for.
+            return pl.from_arrow(SCHEMAS[name].empty_table())
         files = [self.root / rel for rel in rels]
         return pl.read_parquet(files).sort(SORT_KEYS[name])
 

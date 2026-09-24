@@ -126,3 +126,34 @@ def test_session_rejects_a_nonsensical_definition():
         TradingSession(open_sec=0, length_sec=0, tz="UTC")
     with pytest.raises(SessionError):
         TradingSession(open_sec=0, length_sec=100, tz="Not/AZone")
+
+
+# --- parsing a session from a CLI-friendly spec ----------------------------
+
+
+def test_a_named_calendar_can_be_looked_up():
+    assert TradingSession.parse("nyse") == NYSE
+    assert TradingSession.parse("NYSE") == NYSE
+    assert TradingSession.parse("synth") == SYNTH_SESSION
+
+
+def test_an_explicit_spec_can_be_parsed():
+    session = TradingSession.parse("09:30-16:00@America/New_York")
+    assert session.open_sec == 9 * 3600 + 30 * 60
+    assert session.length_sec == 23_400
+    assert session.tz == "America/New_York"
+
+
+def test_an_explicit_spec_handles_a_non_round_close():
+    session = TradingSession.parse("09:00-17:30@Europe/Paris")
+    assert session.length_sec == (17 * 3600 + 30 * 60) - 9 * 3600
+
+
+def test_an_unparseable_spec_lists_the_named_calendars():
+    with pytest.raises(SessionError, match="nyse"):
+        TradingSession.parse("not-a-session")
+
+
+def test_a_close_before_the_open_is_rejected():
+    with pytest.raises(SessionError):
+        TradingSession.parse("16:00-09:30@America/New_York")

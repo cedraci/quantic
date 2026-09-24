@@ -10,8 +10,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from quantic.core.session import NAMED_SESSIONS, SessionError, TradingSession
 from quantic.data.bundle import DatasetBundle
 from quantic.data.catalog import DEFAULT_CATALOG_PATH, Catalog, DuplicateBundleError
+from quantic.data.ingest import build_bundle_from_export
+from quantic.data.manifest import MANIFEST_FILENAME
 from quantic.data.request import default_request
 from quantic.data.schemas import validate_values
 from quantic.data.synth import SynthConfig, generate_bundle
@@ -70,19 +73,64 @@ def synth(
 @data_app.command("ingest")
 def ingest(
     path: Annotated[
-        Path, typer.Argument(help="Bundle directory to validate and register.")
+        Path,
+        typer.Argument(
+            help="A bundle directory to validate, or a raw export directory to build "
+            "into one (pass --out and --session for that)."
+        ),
     ],
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            help="Build a bundle here from a raw export. Omit to validate an "
+            "existing bundle in place.",
+        ),
+    ] = None,
+    session: Annotated[
+        str,
+        typer.Option(
+            "--session",
+            help="Trading calendar the export's timestamps belong to: a name "
+            f"({', '.join(sorted(NAMED_SESSIONS))}) or 'HH:MM-HH:MM@Area/City'.",
+        ),
+    ] = "",
+    bundle_id: Annotated[str | None, typer.Option("--bundle-id")] = None,
+    provenance: Annotated[
+        str, typer.Option("--provenance", help="Where the export came from.")
+    ] = "export",
     catalog: Annotated[Path, typer.Option("--catalog")] = DEFAULT_CATALOG_PATH,
 ) -> None:
-    """Validate a bundle's integrity and register it in the local catalog."""
-    bundle = DatasetBundle.load(path)
-    try:
-        bundle.validate()
-        for name in bundle.manifest.granularities:
-            validate_values(name, bundle.table(name).to_arrow())
-    except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the operator
-        console.print(f"[red]integrity check failed:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
+    """Register a bundle, building it from a raw export first if needed.
+
+    Two modes, selected by ``--out``. Without it, ``path`` must already be a
+    bundle: its hashes are checked and it is registered. With it, ``path`` is
+    a raw export from the market-data machine and is normalised, validated and
+    written to ``--out`` as a new bundle (spec section 8.3).
+    """
+    if out is not None:
+        bundle = _build_from_export(
+            path, out, session=session, bundle_id=bundle_id, provenance=provenance
+        )
+    else:
+        if not (path / MANIFEST_FILENAME).exists():
+            console.print(
+                f"[red]no {MANIFEST_FILENAME} in[/red] {path}"
+            )
+            console.print(
+                "[red]hint:[/red] this looks like a raw export rather than a bundle. "
+                "Pass --out <dir> and --session <calendar> to build a bundle from it"
+            )
+            raise typer.Exit(code=1)
+        bundle = DatasetBundle.load(path)
+        try:
+            bundle.validate()
+            for name in bundle.manifest.granularities:
+                validate_values(name, bundle.table(name).to_arrow())
+        except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the operator
+            console.print(f"[red]integrity check failed:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
     try:
         entry = Catalog(catalog).register(bundle)
     except DuplicateBundleError as exc:
@@ -95,6 +143,52 @@ def ingest(
         raise typer.Exit(code=1) from exc
     console.print(f"[green]registered[/green] {entry.bundle_id}")
     console.print(f"content_hash {entry.content_hash}")
+
+
+def _build_from_export(
+    path: Path,
+    out: Path,
+    *,
+    session: str,
+    bundle_id: str | None,
+    provenance: str,
+) -> DatasetBundle:
+    if not session:
+        console.print("[red]--session is required when building from a raw export[/red]")
+        console.print(
+            "[red]hint:[/red] every intraday metric is bucketed session-relative, so "
+            "the calendar cannot be guessed. Try --session nyse, or "
+            "--session '09:30-16:00@America/New_York'"
+        )
+        raise typer.Exit(code=1)
+    try:
+        parsed = TradingSession.parse(session)
+    except SessionError as exc:
+        console.print(f"[red]bad --session:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        report = build_bundle_from_export(
+            path,
+            out,
+            bundle_id=bundle_id or path.name,
+            session=parsed,
+            provenance=provenance,
+        )
+    except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the operator
+        console.print(f"[red]ingest failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[green]built[/green] {report.bundle_id} -> {out}")
+    for name, rows in sorted(report.rows.items()):
+        console.print(f"  {name}: {rows} rows from {len(report.sources[name])} file(s)")
+    for name, columns in sorted(report.dropped_columns.items()):
+        if columns:
+            console.print(
+                f"  [yellow]dropped from {name}:[/yellow] {', '.join(columns)} "
+                "(not in the schema)"
+            )
+    return DatasetBundle.load(out)
 
 
 @data_app.command("list")

@@ -32,6 +32,11 @@ class SessionError(ValueError):
     """Raised when a session definition or a bucket width is not usable."""
 
 
+def _seconds_of_day(text: str) -> int:
+    hours, _, minutes = text.strip().partition(":")
+    return int(hours) * 3600 + int(minutes or 0) * 60
+
+
 class Boundary(StrEnum):
     """Which side of a bucket a timestamp landing exactly on a boundary belongs to.
 
@@ -130,6 +135,40 @@ class TradingSession:
             )
         return self.length_ns // bucket_ns
 
+    @classmethod
+    def parse(cls, spec: str) -> TradingSession:
+        """A session from a CLI-friendly string.
+
+        Either a named calendar (``"nyse"``) or an explicit
+        ``"HH:MM-HH:MM@Area/City"``. Named so an operator does not have to
+        remember that NYSE opens 34,200 seconds after local midnight.
+        """
+        key = spec.strip().lower()
+        if key in NAMED_SESSIONS:
+            return NAMED_SESSIONS[key]
+
+        if "@" not in spec or "-" not in spec:
+            raise SessionError(
+                f"cannot parse session {spec!r}; expected a named calendar "
+                f"({', '.join(sorted(NAMED_SESSIONS))}) or an explicit "
+                '"HH:MM-HH:MM@Area/City" such as "09:30-16:00@America/New_York"'
+            )
+
+        window, _, tz = spec.strip().partition("@")
+        open_text, _, close_text = window.partition("-")
+        try:
+            open_sec = _seconds_of_day(open_text)
+            close_sec = _seconds_of_day(close_text)
+        except ValueError as exc:
+            raise SessionError(f"cannot parse session {spec!r}: {exc}") from exc
+
+        if close_sec <= open_sec:
+            raise SessionError(
+                f"session {spec!r} closes at or before it opens "
+                f"({close_text.strip()} <= {open_text.strip()})"
+            )
+        return cls(open_sec=open_sec, length_sec=close_sec - open_sec, tz=tz.strip())
+
     def open_ns(self, date: dt.date) -> int:
         """Epoch ns of ``date``'s session open, resolved in the session's timezone."""
         midnight = dt.datetime(date.year, date.month, date.day, tzinfo=self.zone)
@@ -181,3 +220,13 @@ NYSE = TradingSession(open_sec=9 * 3600 + 30 * 60, length_sec=23_400, tz="Americ
 # length. Kept separate from NYSE so that a test passing on synthetic data is
 # never mistaken for a test passing on a real calendar.
 SYNTH_SESSION = TradingSession(open_sec=9 * 3600 + 30 * 60, length_sec=23_400, tz="UTC")
+
+# Calendars an operator can name on the command line instead of restating the
+# open in seconds after local midnight.
+NAMED_SESSIONS: dict[str, TradingSession] = {
+    "nyse": NYSE,
+    "nasdaq": NYSE,
+    "synth": SYNTH_SESSION,
+    "lse": TradingSession(open_sec=8 * 3600, length_sec=30_600, tz="Europe/London"),
+    "xpar": TradingSession(open_sec=9 * 3600, length_sec=30_600, tz="Europe/Paris"),
+}
