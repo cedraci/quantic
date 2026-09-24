@@ -164,3 +164,51 @@ def test_no_constraints_at_all_is_rejected():
     """Without full liquidation the trivial empty schedule is optimal."""
     with pytest.raises(ValueError, match="constraint"):
         _instance(constraints=())
+
+
+# --- equality and hashing ---------------------------------------------------
+#
+# @dataclass(frozen=True) generates __eq__/__hash__ from field tuples, and
+# Instance carries a MarketParams holding an ndarray, so the generated
+# versions inherit MarketParams's defect. Both are defined explicitly,
+# keyed on content_hash, instead.
+
+
+def test_instances_differing_only_in_instance_id_compare_and_hash_equal():
+    a = _instance(instance_id="one")
+    b = _instance(instance_id="two")
+    assert a == b
+    assert hash(a) == hash(b)
+
+
+def test_instances_differing_in_a_hashed_field_compare_unequal():
+    a = _instance()
+    b = _instance(seed=1)
+    assert a != b
+
+
+def test_a_set_of_instances_deduplicates_by_content():
+    a = _instance(instance_id="one")
+    b = _instance(instance_id="two")
+    c = _instance(instance_id="three", seed=1)
+    assert {a, b, c} == {a, c}
+    assert len({a, b, c}) == 2
+
+
+def test_an_instance_works_as_a_dict_key():
+    a = _instance(instance_id="one")
+    b = _instance(instance_id="two")
+    d = {a: "value"}
+    assert d[b] == "value"
+
+
+def test_instance_compared_against_an_unrelated_object_returns_false():
+    assert _instance() != "not an Instance"
+    assert _instance() != 42
+
+
+def test_dataclasses_replace_still_works_on_instance():
+    a = _instance()
+    b = dataclasses.replace(a, risk=VarianceRisk(lam=5e-6))
+    assert b.risk.lam == 5e-6
+    assert b.content_hash != a.content_hash

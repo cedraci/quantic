@@ -29,9 +29,17 @@ from quantic.problem.risk import RiskSpec
 from quantic.problem.schedule import Schedule
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Instance:
-    """One liquidation problem, fully specified."""
+    """One liquidation problem, fully specified.
+
+    ``eq=False``: ``Instance`` carries a ``MarketParams`` holding an ndarray,
+    so the dataclass-generated ``__eq__``/``__hash__`` would inherit
+    ``MarketParams``'s defect (see its docstring). ``__eq__`` and ``__hash__``
+    are defined explicitly below, keyed on ``content_hash`` -- the property
+    that already defines this instance's identity and deliberately excludes
+    ``instance_id``.
+    """
 
     instance_id: str
     tier: str
@@ -88,6 +96,14 @@ class Instance:
                 f"witness trades {worst} lots in a bucket but max_lots_per_bucket is "
                 f"{self.max_lots_per_bucket}"
             )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Instance):
+            return NotImplemented
+        return self.content_hash == other.content_hash
+
+    def __hash__(self) -> int:
+        return hash(self.content_hash)
 
     @property
     def n_assets(self) -> int:

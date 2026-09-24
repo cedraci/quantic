@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -168,3 +170,59 @@ def test_duplicate_symbols_are_rejected():
 def test_no_assets_is_rejected():
     with pytest.raises(ValueError, match="at least one asset"):
         MarketParams(assets=(), covariance=np.zeros((0, 0)), bucket_ns=BUCKET_NS)
+
+
+# --- equality and hashing ---------------------------------------------------
+#
+# @dataclass(frozen=True) generates __eq__ from field tuples, and tuple
+# comparison calls bool() on each field's `==`. For an ndarray with 2+
+# elements that raises ValueError, and the generated __hash__ raises
+# TypeError unconditionally because ndarray is unhashable. Both are defined
+# explicitly below instead.
+
+
+def test_two_separately_constructed_identical_params_compare_and_hash_equal():
+    """3 assets, not 1 -- a 1-asset covariance is truthy-comparable and would
+    pass even with the bug this guards against."""
+    a = _params(3)
+    b = _params(3)
+    assert a == b
+    assert hash(a) == hash(b)
+
+
+def test_params_differing_only_in_covariance_compare_unequal():
+    a = _params(3, cov=np.eye(3) * 1e-5)
+    b = _params(3, cov=np.eye(3) * 2e-5)
+    assert a != b
+
+
+def test_params_differing_only_in_bucket_ns_compare_unequal():
+    a = _params(3)
+    b = MarketParams(assets=a.assets, covariance=a.covariance, bucket_ns=BUCKET_NS * 2)
+    assert a != b
+
+
+def test_params_differing_only_in_assets_compare_unequal():
+    a = _params(3)
+    other_assets = tuple(_asset(f"S{i}", price=999.0 + i) for i in range(3))
+    b = MarketParams(assets=other_assets, covariance=a.covariance, bucket_ns=a.bucket_ns)
+    assert a != b
+
+
+def test_hash_does_not_raise_and_equal_values_hash_equally():
+    a = _params(3)
+    b = _params(3)
+    assert hash(a) == hash(b)
+
+
+def test_params_compared_against_an_unrelated_object_returns_false():
+    assert _params(3) != "not a MarketParams"
+    assert _params(3) != 42
+
+
+def test_dataclasses_replace_still_works_on_params():
+    a = _params(3)
+    b = dataclasses.replace(a, bucket_ns=BUCKET_NS * 3)
+    assert b.bucket_ns == BUCKET_NS * 3
+    assert b.assets == a.assets
+    assert np.array_equal(b.covariance, a.covariance)

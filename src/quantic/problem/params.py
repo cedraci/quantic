@@ -76,12 +76,18 @@ class AssetParams:
             )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class MarketParams:
     """Per-asset parameters plus the cross-asset covariance.
 
     Not ``slots=True``: it holds a numpy array, and the frozen-dataclass
     machinery is enough here.
+
+    ``eq=False``: the dataclass-generated ``__eq__``/``__hash__`` compare
+    field tuples, and tuple comparison calls ``bool()`` on each field's
+    ``==``. For an ndarray with 2+ elements that raises ``ValueError``, and
+    the generated ``__hash__`` is unconditionally broken because ``ndarray``
+    is unhashable. Both are defined explicitly below instead.
     """
 
     assets: tuple[AssetParams, ...]
@@ -119,6 +125,19 @@ class MarketParams:
                 f"{eigenvalues.min():.3e}). A non-PSD covariance makes the risk term "
                 "unbounded below, so every optimum derived from it is meaningless"
             )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, MarketParams):
+            return NotImplemented
+        return (
+            self.assets == other.assets
+            and self.bucket_ns == other.bucket_ns
+            and np.array_equal(self.covariance, other.covariance)
+        )
+
+    def __hash__(self) -> int:
+        cov = np.asarray(self.covariance, dtype=float)
+        return hash((self.assets, self.bucket_ns, cov.tobytes(), cov.shape))
 
     @property
     def n_assets(self) -> int:
