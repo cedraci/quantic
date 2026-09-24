@@ -27,7 +27,8 @@ from quantic.micro.impact.almgren_chriss import AlmgrenChriss
 from quantic.micro.impact.base import ImpactModel
 from quantic.micro.impact.sqrt_law import PowerLawImpact
 from quantic.problem.instance import Instance
-from quantic.problem.risk import VarianceRisk
+from quantic.problem.risk import CVaRRisk, VarianceRisk
+from quantic.problem.scenarios import ScenarioSet
 from quantic.problem.schedule import Schedule
 
 _BPS = 10_000.0
@@ -82,7 +83,56 @@ def impact_model_for(instance: Instance, i: int) -> ImpactModel:
     return AlmgrenChriss(eta=a.y_coef, gamma=a.gamma)
 
 
-def evaluate(instance: Instance, schedule: Schedule) -> ObjectiveBreakdown:
+def optimal_zeta(instance: Instance, schedule: Schedule) -> float:
+    """The weighted empirical VaR at the instance's tail level.
+
+    Rockafellar-Uryasev attains its minimum here, so evaluating at this
+    ``zeta`` gives the true CVaR. M3 will instead pass a binary-expanded
+    ``zeta``, and the gap between the two is the discretisation cost of the
+    encoding -- which is why the evaluator takes ``zeta`` rather than
+    minimising internally.
+    """
+    if not isinstance(instance.risk, CVaRRisk):
+        raise TypeError(
+            f"optimal_zeta needs a CVaRRisk, got {type(instance.risk).__name__}"
+        )
+    scenarios = instance.risk.scenarios
+    losses = scenarios.losses(instance, schedule)
+    order = np.argsort(losses)
+    cumulative = np.cumsum(np.asarray(scenarios.weights, dtype=float)[order])
+    index = min(int(np.searchsorted(cumulative, instance.risk.alpha)), losses.size - 1)
+    return float(losses[order][index])
+
+
+def cvar_of(
+    scenarios: ScenarioSet,
+    instance: Instance,
+    schedule: Schedule,
+    *,
+    alpha: float,
+    zeta: float | None = None,
+) -> float:
+    """CVaR of ``schedule`` under an arbitrary ``scenarios``, unweighted by ``lam``.
+
+    A diagnostic rather than part of the objective: the generator uses it to
+    report how much scenario reduction moved the CVaR. ``zeta=None`` uses the
+    optimum for *this* set, which is the right choice for a diagnostic --
+    unlike the objective, nothing downstream has to reproduce it.
+    """
+    losses = scenarios.losses(instance, schedule)
+    weights = np.asarray(scenarios.weights, dtype=float)
+    if zeta is None:
+        order = np.argsort(losses)
+        cumulative = np.cumsum(weights[order])
+        index = min(int(np.searchsorted(cumulative, alpha)), losses.size - 1)
+        zeta = float(losses[order][index])
+    excess = float(np.sum(weights * np.maximum(losses - zeta, 0.0)))
+    return float(zeta + excess / (1.0 - alpha))
+
+
+def evaluate(
+    instance: Instance, schedule: Schedule, *, zeta: float | None = None
+) -> ObjectiveBreakdown:
     """Evaluate spec section 5.2's objective on ``schedule``. Currency units."""
     if (schedule.n_assets, schedule.n_buckets) != (instance.n_assets, instance.n_buckets):
         raise ValueError(
@@ -121,7 +171,7 @@ def evaluate(instance: Instance, schedule: Schedule) -> ObjectiveBreakdown:
                 * a.price
             )
 
-    risk = _risk_cost(instance, h)
+    risk = _risk_cost(instance, schedule, h, zeta)
 
     return ObjectiveBreakdown(
         spread_cost=float(spread),
@@ -131,32 +181,51 @@ def evaluate(instance: Instance, schedule: Schedule) -> ObjectiveBreakdown:
     )
 
 
-def _risk_cost(instance: Instance, holdings_shares: np.ndarray) -> float:
-    """``lam * sum over t of h_t' Sigma_price h_t``, with ``h`` in shares.
+def _risk_cost(
+    instance: Instance,
+    schedule: Schedule,
+    holdings_shares: np.ndarray,
+    zeta: float | None,
+) -> float:
+    """Dispatch the risk term on the spec's type.
 
-    ``MarketParams.covariance`` is a **log-return** covariance and is
-    dimensionless; ``price_covariance`` converts it so the quadratic form
-    comes out in currency squared. Using the return covariance directly would
-    be a silent error of ``price**2``.
-
-    The bucket horizon is already inside the covariance, so spec section 5.2's
-    ``tau`` does not appear.
+    Never on the presence of an attribute: ``CVaRRisk`` also carries a
+    ``lam``, so an attribute probe would score it as variance -- silently, and
+    with an entirely plausible number.
     """
-    # Dispatch on type, never on the presence of an attribute. CVaRRisk also
-    # carries a `lam`, so an attribute probe would score it as variance --
-    # silently, and with an entirely plausible number.
-    if not isinstance(instance.risk, VarianceRisk):
-        raise NotImplementedError(
-            f"objective.evaluate does not know how to score risk spec "
-            f"{instance.risk.name!r} ({type(instance.risk).__name__}). "
-            "VarianceRisk is handled here; CVaRRisk is handled by _cvar_cost"
+    risk = instance.risk
+
+    if isinstance(risk, VarianceRisk):
+        if zeta is not None:
+            raise ValueError(
+                "zeta was supplied but the risk spec is VarianceRisk, which has no "
+                "zeta. Passing one means the caller is unsure which objective they "
+                "are scoring"
+            )
+        if risk.lam == 0.0:
+            return 0.0
+        sigma_price = instance.params.price_covariance()
+        total = 0.0
+        for t in range(holdings_shares.shape[1]):
+            h_t = holdings_shares[:, t].astype(float)
+            total += float(h_t @ sigma_price @ h_t)
+        return risk.lam * total
+
+    if isinstance(risk, CVaRRisk):
+        if zeta is None:
+            raise ValueError(
+                "evaluate needs an explicit zeta under CVaRRisk. Rockafellar-Uryasev "
+                "treats zeta as a decision variable, and M3 binary-expands it, so the "
+                "call site must say which zeta it is scoring. "
+                "problem.objective.optimal_zeta gives the minimising one"
+            )
+        if risk.lam == 0.0:
+            return 0.0
+        return risk.lam * cvar_of(
+            risk.scenarios, instance, schedule, alpha=risk.alpha, zeta=zeta
         )
-    lam = instance.risk.lam
-    if lam == 0.0:
-        return 0.0
-    sigma_price = instance.params.price_covariance()
-    total = 0.0
-    for t in range(holdings_shares.shape[1]):
-        h_t = holdings_shares[:, t].astype(float)
-        total += float(h_t @ sigma_price @ h_t)
-    return lam * total
+
+    raise NotImplementedError(
+        f"objective.evaluate does not know how to score risk spec "
+        f"{risk.name!r} ({type(risk).__name__})"
+    )
