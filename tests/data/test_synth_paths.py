@@ -76,8 +76,13 @@ def test_mid_is_continuous_across_buckets():
 
 
 def test_impact_sign_follows_flow_sign_on_average():
-    """With low noise, buying buckets push the mid up."""
-    cfg = SynthConfig(symbols=("SYNA",), n_days=20, buckets_per_day=13, seed=1, noise_frac=0.0)
+    """With low noise, buying buckets push the mid up.
+
+    noise_frac is small but non-zero: the generator now holds total bucket
+    variance at sigma_bucket**2 by trading diffusion off against impact, and a
+    mid with literally no diffusion leaves nothing to trade off (finding 4.1).
+    """
+    cfg = SynthConfig(symbols=("SYNA",), n_days=20, buckets_per_day=13, seed=1, noise_frac=0.01)
     b = generate_buckets(cfg)
     ret = (b["mid_close"] / b["mid_open"] - 1.0).to_numpy()
     flow = b["participation"].to_numpy()

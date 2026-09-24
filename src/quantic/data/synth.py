@@ -46,10 +46,12 @@ class SynthConfig:
     depth_levels: int = 10
     level_size: int = 1_000
     flow_sd: float = 0.08
-    # Diffusion noise as a multiple of sigma_bucket. The default of 1.0 is the
-    # realistic regime: mid returns are dominated by diffusion and impact is a
-    # small component, so realised bucket volatility tracks daily_vol. Tests
-    # that need a clean signal lower it explicitly.
+    # Relative weight of diffusion against impact in the bucket return. The
+    # two are then renormalised together so that total bucket variance is
+    # always sigma_bucket**2 (see `_impact_scale`), which is what makes
+    # realised volatility equal the configured value at every setting. 1.0 is
+    # the realistic regime -- returns dominated by diffusion, impact a small
+    # component. Tests that need a clean impact signal lower it.
     noise_frac: float = 1.00
     impact_delta: Mapping[str, float] | None = None
     impact_Y: Mapping[str, float] | None = None
@@ -61,6 +63,15 @@ class SynthConfig:
         # wrong by the rounding error.
         if self.buckets_per_day <= 0:
             raise ValueError(f"buckets_per_day must be positive, got {self.buckets_per_day}")
+        if self.noise_frac <= 0:
+            raise ValueError(
+                f"noise_frac must be positive, got {self.noise_frac}: a mid with no "
+                "diffusion at all is not a market, and the renormalisation that holds "
+                "total bucket variance at sigma_bucket**2 would have nothing to trade "
+                "off against impact"
+            )
+        if self.flow_sd <= 0:
+            raise ValueError(f"flow_sd must be positive, got {self.flow_sd}")
         SYNTH_SESSION.buckets_per_day(self.bucket_ns)
 
     @property
@@ -70,6 +81,47 @@ class SynthConfig:
     @property
     def sigma_bucket(self) -> float:
         return self.daily_vol / np.sqrt(self.buckets_per_day)
+
+
+# Sample size for the Monte Carlo estimate of E[|f|**(2*delta)]. Large enough
+# that the estimate is stable to ~1e-4, and fixed-seeded so a bundle's ground
+# truth is reproducible.
+_MOMENT_SAMPLES = 200_000
+_MOMENT_SEED = 987_654_321
+
+
+def _flow_sample(cfg: SynthConfig) -> np.ndarray:
+    """A large draw from the same flow distribution ``generate_buckets`` uses."""
+    rng = np.random.default_rng(_MOMENT_SEED)
+    f = np.clip(rng.normal(0.0, cfg.flow_sd, _MOMENT_SAMPLES), -0.3, 0.3)
+    # generate_buckets redraws until |f| >= 1e-4; at these scales that is a
+    # vanishing share of draws, so flooring is equivalent and deterministic.
+    tiny = np.abs(f) < 1e-4
+    f[tiny] = np.where(f[tiny] >= 0, 1e-4, -1e-4)
+    return f
+
+
+def _impact_scale(cfg: SynthConfig, delta: float, y_coef: float) -> float:
+    """Divisor that holds total bucket variance at ``sigma_bucket ** 2``.
+
+    The bucket return is ``impact + diffusion``. With impact
+    ``Y * sigma * sign(f) * |f|**delta`` and diffusion ``N(0, noise_frac *
+    sigma)``, and ``f`` independent of the diffusion draw, total variance is
+
+        sigma**2 * (Y**2 * E[|f|**(2*delta)] + noise_frac**2)
+
+    Dividing both terms by the square root of that bracket makes the total
+    exactly ``sigma**2`` at every ``noise_frac``.
+
+    This matters because calibration divides by the sigma it *measures* while
+    the generator multiplies by the sigma it *configures*. Unless those agree,
+    the recovered ``Y`` is out by their ratio -- measured at 357-464% on a
+    ``noise_frac=0.05`` bundle -- while ``delta`` is untouched, because a
+    constant divisor moves the intercept of the fit and not its slope.
+    """
+    f = _flow_sample(cfg)
+    second_moment = float(np.mean(np.abs(f) ** (2.0 * delta)))
+    return float(np.sqrt(y_coef**2 * second_moment + cfg.noise_frac**2))
 
 
 def ground_truth(cfg: SynthConfig) -> dict[str, Any]:
@@ -82,11 +134,23 @@ def ground_truth(cfg: SynthConfig) -> dict[str, Any]:
     missing = set(cfg.symbols) - set(deltas) | set(cfg.symbols) - set(ys)
     if missing:
         raise ValueError(f"ground truth missing for symbols {sorted(missing)}")
+
+    # The configured Y fixes the *relative* weight of impact against
+    # diffusion; renormalising to hold total variance fixed then determines
+    # the coefficient actually injected. That effective value, not the
+    # requested one, is what calibration can recover, so it is what
+    # `impact_Y` reports.
+    scales = {s: _impact_scale(cfg, deltas[s], ys[s]) for s in cfg.symbols}
+    effective = {s: ys[s] / scales[s] for s in cfg.symbols}
+
     return {
         "impact_delta": deltas,
-        "impact_Y": ys,
+        "impact_Y": effective,
+        "impact_Y_configured": ys,
+        "impact_scale": scales,
         "daily_vol": cfg.daily_vol,
         "buckets_per_day": cfg.buckets_per_day,
+        "noise_frac": cfg.noise_frac,
         "sigma_bucket": float(cfg.sigma_bucket),
     }
 
@@ -129,7 +193,10 @@ def generate_buckets(cfg: SynthConfig) -> pl.DataFrame:
         # other symbols are added or removed from the config.
         rng = np.random.default_rng([cfg.seed, sym_idx])
         delta = gt["impact_delta"][symbol]
+        # The effective coefficient, already renormalised so that impact plus
+        # diffusion carries exactly sigma_bucket**2 of variance.
         y_coef = gt["impact_Y"][symbol]
+        noise_sd = cfg.noise_frac / gt["impact_scale"][symbol]
         mid = cfg.base_price
 
         for day_index, date in enumerate(dates):
@@ -142,7 +209,7 @@ def generate_buckets(cfg: SynthConfig) -> pl.DataFrame:
                     round(cfg.adv_shares / cfg.buckets_per_day * rng.lognormal(0.0, 0.15))
                 )
                 impact = y_coef * sigma_b * np.sign(f) * abs(f) ** delta
-                noise = rng.normal(0.0, cfg.noise_frac * sigma_b)
+                noise = rng.normal(0.0, noise_sd * sigma_b)
                 mid_open = mid
                 mid_close = mid_open * (1.0 + impact + noise)
                 mid = mid_close

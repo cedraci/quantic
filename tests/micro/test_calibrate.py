@@ -256,3 +256,40 @@ def test_bucket_width_that_does_not_divide_the_session_is_rejected(realistic_bun
 
     with pytest.raises(SessionError, match="does not divide"):
         calibrate_bundle(realistic_bundle, session=SESSION, bucket_ns=3600 * 1_000_000_000)
+
+
+def test_calibrate_bundle_recovers_delta_and_y_with_sigma_estimated(low_noise_bundle):
+    """THE UPGRADED M1 GATE: end-to-end recovery through the production path.
+
+    The previous gate called `fit_power_law` directly and passed the injected
+    true sigma, so `estimate_bucket_sigma` was never exercised and sigma bias
+    -- which maps one-to-one onto y_coef bias -- could not be detected.
+
+    It also could not have passed. Before finding 4.1 was fixed, the generator
+    scaled diffusion by `noise_frac` without compensating, so realised
+    volatility at `noise_frac=0.05` was 0.21x the configured value.
+    `estimate_bucket_sigma` measured the realised value correctly, calibration
+    divided by it, and the recovered Y came out 357-464% high. Holding total
+    bucket variance at `sigma_bucket**2` makes the two agree, so delta and Y
+    are now recoverable from the same bundle -- which the review recorded as
+    impossible for any single synthetic config.
+
+    Tolerances are set from measurement on this fixture: delta error <= 0.020
+    and Y error <= 8.0% across the three symbols.
+    """
+    gt = low_noise_bundle.manifest.extra["ground_truth"]
+
+    sigma = estimate_bucket_sigma(
+        low_noise_bundle.daily(), buckets_per_day=LOW_NOISE.buckets_per_day
+    )
+    for symbol in LOW_NOISE.symbols:
+        assert sigma[symbol] == pytest.approx(gt["sigma_bucket"], rel=0.15)
+
+    # sigma deliberately not supplied: estimate_bucket_sigma is under test too.
+    results = calibrate_bundle(low_noise_bundle, session=SESSION, bucket_ns=BUCKET_NS)
+
+    for symbol in LOW_NOISE.symbols:
+        result = results[symbol]
+        assert result.delta == pytest.approx(gt["impact_delta"][symbol], abs=0.05)
+        assert result.y_coef == pytest.approx(gt["impact_Y"][symbol], rel=0.20)
+        assert result.r_squared > 0.95
