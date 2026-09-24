@@ -4,9 +4,11 @@ import numpy as np
 import polars as pl
 import pytest
 
+from quantic.core.session import TradingSession
 from quantic.core.types import BookSnapshot, PriceLevel
 from quantic.micro.liquidity import (
     InsufficientDataError,
+    OutOfSessionError,
     adv,
     bucket_volume,
     depth_notional,
@@ -65,15 +67,46 @@ def _l3() -> pl.DataFrame:
     )
 
 
+# A one-second session starting at the epoch, so the nanosecond timestamps in
+# ``_l3`` land inside it. Bucketing is session-relative now, so a fixture must
+# declare the session its stamps belong to.
+TEST_SESSION = TradingSession(open_sec=0, length_sec=1, tz="UTC")
+
+
 def test_bucket_volume_counts_only_executions():
-    out = bucket_volume(_l3(), bucket_ns=1_000).sort("bucket_id")
+    out = bucket_volume(_l3(), session=TEST_SESSION, bucket_ns=1_000).sort("bucket_id")
     assert out["volume"].to_list() == [400, 400]
 
 
 def test_signed_order_flow_uses_the_documented_convention():
-    out = signed_order_flow(_l3(), bucket_ns=1_000).sort("bucket_id")
+    out = signed_order_flow(_l3(), session=TEST_SESSION, bucket_ns=1_000).sort("bucket_id")
     assert out["signed_flow"].to_list() == [200, -400]
     assert out["participation"].to_list() == pytest.approx([0.5, -1.0])
+
+
+def test_executions_outside_the_session_are_rejected_by_default():
+    """Real exports carry off-session prints; they must never be silently binned."""
+    off_session = _l3().with_columns(
+        pl.when(pl.col("seq") == 3)
+        .then(pl.lit(5_000_000_000, dtype=pl.Int64))  # 5s: past the 1s session close
+        .otherwise(pl.col("ts_ns"))
+        .alias("ts_ns")
+    )
+    with pytest.raises(OutOfSessionError, match="1 "):
+        bucket_volume(off_session, session=TEST_SESSION, bucket_ns=1_000)
+
+
+def test_out_of_session_executions_can_be_dropped_deliberately():
+    off_session = _l3().with_columns(
+        pl.when(pl.col("seq") == 3)
+        .then(pl.lit(5_000_000_000, dtype=pl.Int64))
+        .otherwise(pl.col("ts_ns"))
+        .alias("ts_ns")
+    )
+    out = bucket_volume(
+        off_session, session=TEST_SESSION, bucket_ns=1_000, allow_out_of_session=True
+    )
+    assert out["volume"].to_list() == [400]
 
 
 def test_adv_is_a_trailing_mean():

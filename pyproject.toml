@@ -11,6 +11,8 @@ dependencies = [
     "scikit-learn>=1.4",
     "typer>=0.12",
     "rich>=13.0",
+    # Windows ships no system IANA tz database; core.session needs one.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

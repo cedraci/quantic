@@ -2,8 +2,10 @@ import numpy as np
 import polars as pl
 import pytest
 
+from quantic.core.session import SYNTH_SESSION
 from quantic.data.schemas import L3Action, validate
 from quantic.data.synth import SynthConfig, build_l3_and_l2, generate_buckets, generate_bundle
+from quantic.micro.bucketing import with_session_buckets
 from quantic.micro.liquidity import signed_order_flow
 
 CFG = SynthConfig(symbols=("SYNA", "SYNB"), n_days=3, buckets_per_day=4, seed=3, depth_levels=5)
@@ -172,12 +174,16 @@ def test_signed_flow_recovers_true_participation(tmp_path):
     bucket_ns = (23_400 // cfg.buckets_per_day) * 1_000_000_000
 
     bundle = generate_bundle(tmp_path / "synth", cfg)
-    flow = signed_order_flow(bundle.l3(), bucket_ns=bucket_ns).select(
-        "symbol", "bucket_id", pl.col("participation").alias("observed_participation")
-    )
+    flow = signed_order_flow(
+        bundle.l3(), session=SYNTH_SESSION, bucket_ns=bucket_ns
+    ).select("symbol", "bucket_id", pl.col("participation").alias("observed_participation"))
 
-    buckets = generate_buckets(cfg).with_columns(
-        (pl.col("ts_start_ns") // bucket_ns).alias("bucket_id")
+    # Bucket the generator's own frame through the same session-relative
+    # helper, so the join key is produced by one implementation rather than
+    # two arithmetic expressions that happen to agree.
+    buckets = with_session_buckets(
+        generate_buckets(cfg), session=SYNTH_SESSION, bucket_ns=bucket_ns,
+        ts_col="ts_start_ns",
     ).select("symbol", "bucket_id", pl.col("participation").alias("true_participation"))
 
     joined = flow.join(buckets, on=["symbol", "bucket_id"], how="inner")

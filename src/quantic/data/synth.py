@@ -16,11 +16,15 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from quantic.core.session import SYNTH_SESSION
 from quantic.data.bundle import DatasetBundle
 from quantic.data.schemas import L3Action
 
-_SESSION_OPEN_SEC = 9 * 3600 + 30 * 60  # 09:30
-_SESSION_SECONDS = 23_400  # 6.5 hours
+# The generator does not define its own calendar. SYNTH_SESSION is the single
+# source of truth for session open and length; a second hand-maintained copy
+# is what let calibrate_bundle drift to a rounded bucket count.
+_SESSION_OPEN_SEC = SYNTH_SESSION.open_sec
+_SESSION_SECONDS = SYNTH_SESSION.length_sec
 _NS = 1_000_000_000
 
 _DEFAULT_DELTAS = (0.45, 0.50, 0.60)
@@ -49,6 +53,19 @@ class SynthConfig:
     noise_frac: float = 1.00
     impact_delta: Mapping[str, float] | None = None
     impact_Y: Mapping[str, float] | None = None
+
+    def __post_init__(self) -> None:
+        # Reuse the session's own exactness check rather than restating it:
+        # a bucket count that does not divide the session evenly produces
+        # ragged buckets, and every per-bucket volatility derived from it is
+        # wrong by the rounding error.
+        if self.buckets_per_day <= 0:
+            raise ValueError(f"buckets_per_day must be positive, got {self.buckets_per_day}")
+        SYNTH_SESSION.buckets_per_day(self.bucket_ns)
+
+    @property
+    def bucket_ns(self) -> int:
+        return SYNTH_SESSION.length_ns // self.buckets_per_day
 
     @property
     def sigma_bucket(self) -> float:
@@ -88,11 +105,12 @@ def bucket_ts_ns(d: dt.date, bucket: int, buckets_per_day: int) -> tuple[int, in
     midnight = int(
         dt.datetime(d.year, d.month, d.day, tzinfo=dt.UTC).timestamp()
     ) * _NS
+    # SynthConfig.__post_init__ has already required that buckets_per_day
+    # divides the session exactly, so there is no ragged final bucket to
+    # special-case.
     length = _SESSION_SECONDS // buckets_per_day
     start = midnight + (_SESSION_OPEN_SEC + bucket * length) * _NS
     end = midnight + (_SESSION_OPEN_SEC + (bucket + 1) * length) * _NS
-    if bucket == buckets_per_day - 1:
-        end = midnight + (_SESSION_OPEN_SEC + _SESSION_SECONDS) * _NS
     return start, end
 
 
@@ -475,5 +493,6 @@ def generate_bundle(
         tables,
         bundle_id=bundle_id or f"synth-seed{cfg.seed}-{cfg.n_days}d",
         provenance="synthetic",
+        session=SYNTH_SESSION,
         extra={"ground_truth": ground_truth(cfg), "synth_config": _config_payload(cfg)},
     )

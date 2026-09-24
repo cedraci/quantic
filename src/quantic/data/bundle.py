@@ -19,6 +19,7 @@ from typing import Any
 
 import polars as pl
 
+from quantic.core.session import TradingSession
 from quantic.data.manifest import (
     MANIFEST_FILENAME,
     Manifest,
@@ -38,6 +39,13 @@ SORT_KEYS: dict[str, list[str]] = {
 
 _PARTITIONED = ("l1_taq", "l2_depth", "l3_messages")
 
+# Well-known key in Manifest.extra. A bundle's trading calendar is part of its
+# identity: every intraday metric derived from it is bucketed session-relative,
+# and bucketing L3 stamped in one calendar against another silently
+# misattributes flow. Stored in `extra` rather than as a manifest field so
+# existing bundles stay readable without a schema_version bump.
+SESSION_KEY = "session"
+
 
 class BundleIntegrityError(RuntimeError):
     """Raised when on-disk bytes do not match the manifest."""
@@ -56,6 +64,28 @@ class DatasetBundle:
     def symbols(self) -> tuple[str, ...]:
         return self.manifest.symbols
 
+    @property
+    def session(self) -> TradingSession:
+        """The trading calendar these timestamps belong to.
+
+        Raises rather than defaulting. Guessing a calendar is how L3 stamped
+        in one market ends up bucketed against another, and the resulting
+        misattribution is invisible in the output.
+        """
+        payload = self.manifest.extra.get(SESSION_KEY)
+        if payload is None:
+            raise KeyError(
+                f"bundle {self.manifest.bundle_id} records no trading session; it was "
+                "written before sessions were tracked, or by a writer that did not "
+                "declare one. Pass session= to DatasetBundle.write, or supply the "
+                "session explicitly at the call site"
+            )
+        return TradingSession(
+            open_sec=int(payload["open_sec"]),
+            length_sec=int(payload["length_sec"]),
+            tz=str(payload["tz"]),
+        )
+
     @classmethod
     def write(
         cls,
@@ -64,6 +94,7 @@ class DatasetBundle:
         *,
         bundle_id: str,
         provenance: str,
+        session: TradingSession | None = None,
         extra: dict[str, Any] | None = None,
     ) -> DatasetBundle:
         root = Path(root)
@@ -137,7 +168,7 @@ class DatasetBundle:
             granularities=tuple(sorted(prepared)),
             files=file_hashes,
             content_hash=compute_content_hash(file_hashes),
-            extra=dict(extra or {}),
+            extra=_with_session(dict(extra or {}), session),
         )
         manifest.write(root / MANIFEST_FILENAME)
         return cls(root, manifest)
@@ -200,3 +231,15 @@ class DatasetBundle:
 
     def daily(self) -> pl.DataFrame:
         return self.table("daily_bars")
+
+
+def _with_session(
+    extra: dict[str, Any], session: TradingSession | None
+) -> dict[str, Any]:
+    if session is not None:
+        extra[SESSION_KEY] = {
+            "open_sec": session.open_sec,
+            "length_sec": session.length_sec,
+            "tz": session.tz,
+        }
+    return extra

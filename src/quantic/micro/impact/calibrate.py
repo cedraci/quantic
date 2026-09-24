@@ -14,10 +14,12 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
+from quantic.core.session import Boundary, TradingSession
 from quantic.data.bundle import DatasetBundle
+from quantic.micro.bucketing import with_session_buckets
 from quantic.micro.covariance import log_returns
 from quantic.micro.impact.sqrt_law import PowerLawImpact
-from quantic.micro.liquidity import signed_order_flow
+from quantic.micro.liquidity import OutOfSessionError, signed_order_flow
 
 MIN_BINS = 4
 
@@ -46,29 +48,96 @@ class CalibrationResult:
 
 
 def observations_from_buckets(
-    l1: pl.DataFrame, l3: pl.DataFrame, *, bucket_ns: int
+    l1: pl.DataFrame,
+    l3: pl.DataFrame,
+    *,
+    session: TradingSession,
+    bucket_ns: int,
+    allow_out_of_session: bool = False,
 ) -> pl.DataFrame:
-    """Join bucket-level signed flow to the mid return realised over that bucket."""
-    # A quote stamped exactly on a boundary belongs to the closing bucket.
-    mids = (
-        l1.with_columns(
-            ((pl.col("ts_ns") - 1) // bucket_ns).alias("bucket_id"),
-            ((pl.col("bid") + pl.col("ask")) / 2.0).alias("mid"),
+    """Join bucket-level signed flow to the mid return realised over that bucket.
+
+    Both sides are bucketed session-relative (:mod:`quantic.core.session`).
+    The L1 mid series uses :attr:`Boundary.CLOSING` because a quote stamped on
+    a bucket boundary describes the bucket that just ended; the L3 flow uses
+    :attr:`Boundary.OPENING` because a message on the boundary is part of the
+    new bucket's flow. Those are the project's only two conventions and both
+    are half-open, so nothing is double-counted.
+
+    Contiguity is tested on ``session_index``, never on ``bucket_id``.
+    Consecutive sessions are adjacent in ``bucket_id``, so a ``bucket_id``
+    difference of one does not mean two buckets are contiguous in market time
+    -- that was the mechanism by which overnight returns were being scored as
+    intraday impact.
+    """
+    session.buckets_per_day(bucket_ns)  # reject a width that does not divide the session
+
+    quotes = with_session_buckets(
+        l1, session=session, bucket_ns=bucket_ns, boundary=Boundary.CLOSING
+    )
+    outside = quotes.filter(pl.col("bucket_id").is_null())
+    if outside.height and not allow_out_of_session:
+        raise OutOfSessionError(
+            f"{outside.height} of {quotes.height} L1 quote(s) fall outside the "
+            f"{session.open_sec}s+{session.length_sec}s {session.tz} session "
+            f"(example ts_ns={outside['ts_ns'][0]}); pass allow_out_of_session=True "
+            "to drop them"
         )
+
+    # A crossed or non-positive quote makes (bid + ask) / 2 meaningless: an
+    # injected crossed quote produces a bucket "impact" of several percent
+    # against a normal range well under one percent, which then dominates the
+    # bin it lands in. BookSnapshot.mid already refuses this; the calibration
+    # path must not be more permissive than the type it mirrors.
+    bad = quotes.filter(
+        pl.col("bucket_id").is_not_null()
+        & (
+            (pl.col("bid") >= pl.col("ask"))
+            | (pl.col("bid") <= 0)
+            | (pl.col("ask") <= 0)
+            | pl.col("bid").is_null()
+            | pl.col("ask").is_null()
+        )
+    )
+    if bad.height:
+        row = bad.row(0, named=True)
+        raise CalibrationError(
+            f"{bad.height} L1 quote(s) are crossed, locked or non-positive and cannot "
+            f"yield a mid (example: symbol={row['symbol']} ts_ns={row['ts_ns']} "
+            f"bid={row['bid']} ask={row['ask']})"
+        )
+
+    mids = (
+        quotes.filter(pl.col("bucket_id").is_not_null())
+        .with_columns(((pl.col("bid") + pl.col("ask")) / 2.0).alias("mid"))
         .sort(["symbol", "bucket_id", "ts_ns"])
-        .group_by(["symbol", "bucket_id"])
-        .agg(pl.col("mid").last())
+        .group_by(["symbol", "bucket_id"], maintain_order=True)
+        .agg(
+            pl.col("mid").last(),
+            pl.col("session_day").last(),
+            pl.col("session_index").last(),
+        )
         .sort(["symbol", "bucket_id"])
         .with_columns(
             pl.col("mid").shift(1).over("symbol").alias("prev_mid"),
-            pl.col("bucket_id").shift(1).over("symbol").alias("prev_bucket"),
+            pl.col("session_day").shift(1).over("symbol").alias("prev_session_day"),
+            pl.col("session_index").shift(1).over("symbol").alias("prev_session_index"),
         )
-        # Drop gaps, which are overnight returns rather than intraday impact.
-        .filter(pl.col("bucket_id") - pl.col("prev_bucket") == 1)
+        # Keep only buckets contiguous *within* a session. This drops each
+        # session's first bucket, whose predecessor is the previous close.
+        .filter(
+            (pl.col("session_day") == pl.col("prev_session_day"))
+            & (pl.col("session_index") - pl.col("prev_session_index") == 1)
+        )
         .with_columns((pl.col("mid") / pl.col("prev_mid") - 1.0).alias("impact"))
     )
 
-    flow = signed_order_flow(l3, bucket_ns=bucket_ns)
+    flow = signed_order_flow(
+        l3,
+        session=session,
+        bucket_ns=bucket_ns,
+        allow_out_of_session=allow_out_of_session,
+    )
 
     return (
         mids.join(flow, on=["symbol", "bucket_id"], how="inner")
@@ -158,17 +227,32 @@ def estimate_bucket_sigma(daily: pl.DataFrame, *, buckets_per_day: int) -> dict[
 def calibrate_bundle(
     bundle: DatasetBundle,
     *,
+    session: TradingSession,
     bucket_ns: int,
     sigma: Mapping[str, float] | None = None,
     n_bins: int = DEFAULT_N_BINS,
+    allow_out_of_session: bool = False,
 ) -> dict[str, CalibrationResult]:
-    session_ns = 23_400 * 1_000_000_000
-    buckets_per_day = max(int(round(session_ns / bucket_ns)), 1)
+    """Calibrate every symbol in ``bundle`` against ``session``.
+
+    ``session`` is explicit rather than assumed. The previous version hardcoded
+    a second copy of the session length and derived the bucket count by
+    rounding, which silently reported 6 buckets per day for a 1-hour bucket in
+    a 6.5-hour session -- a 4.1% error in every sigma derived from it.
+    :meth:`TradingSession.buckets_per_day` is exact and rejects that width.
+    """
+    buckets_per_day = session.buckets_per_day(bucket_ns)
     sigmas = dict(sigma) if sigma is not None else estimate_bucket_sigma(
         bundle.daily(), buckets_per_day=buckets_per_day
     )
 
-    observations = observations_from_buckets(bundle.l1(), bundle.l3(), bucket_ns=bucket_ns)
+    observations = observations_from_buckets(
+        bundle.l1(),
+        bundle.l3(),
+        session=session,
+        bucket_ns=bucket_ns,
+        allow_out_of_session=allow_out_of_session,
+    )
     results: dict[str, CalibrationResult] = {}
     for symbol in sorted(observations["symbol"].unique().to_list()):
         if symbol not in sigmas:

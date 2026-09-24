@@ -2,6 +2,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from quantic.core.session import NYSE, SYNTH_SESSION
 from quantic.data.synth import SynthConfig, generate_bundle
 from quantic.micro.impact.calibrate import (
     CalibrationError,
@@ -11,8 +12,10 @@ from quantic.micro.impact.calibrate import (
     fit_power_law,
     observations_from_buckets,
 )
+from quantic.micro.liquidity import OutOfSessionError
 
 BUCKET_NS = (23_400 // 13) * 1_000_000_000  # 30-minute buckets
+SESSION = SYNTH_SESSION
 
 # R23 amendment 1: noise_frac=0.05, not the brief's 0.2. Measurement shows
 # 0.2 does not clear the gate's tolerances; 0.05 does, with real margin.
@@ -49,7 +52,7 @@ def realistic_bundle(tmp_path_factory):
 
 def test_observations_have_expected_columns(low_noise_bundle):
     obs = observations_from_buckets(
-        low_noise_bundle.l1(), low_noise_bundle.l3(), bucket_ns=BUCKET_NS
+        low_noise_bundle.l1(), low_noise_bundle.l3(), session=SESSION, bucket_ns=BUCKET_NS
     )
     assert obs.columns == [
         "symbol", "bucket_id", "mid", "volume", "signed_flow", "participation", "impact"
@@ -60,7 +63,7 @@ def test_observations_have_expected_columns(low_noise_bundle):
 def test_overnight_returns_are_excluded(low_noise_bundle):
     """13 buckets per day, 40 days: each day loses its first bucket to the gap."""
     obs = observations_from_buckets(
-        low_noise_bundle.l1(), low_noise_bundle.l3(), bucket_ns=BUCKET_NS
+        low_noise_bundle.l1(), low_noise_bundle.l3(), session=SESSION, bucket_ns=BUCKET_NS
     )
     per_symbol = obs.group_by("symbol").len()["len"].unique().to_list()
     assert per_symbol == [LOW_NOISE.n_days * (LOW_NOISE.buckets_per_day - 1)]
@@ -71,7 +74,7 @@ def test_recovers_ground_truth_delta_and_y_in_low_noise(low_noise_bundle):
     gt = low_noise_bundle.manifest.extra["ground_truth"]
     sigma = gt["sigma_bucket"]
     obs = observations_from_buckets(
-        low_noise_bundle.l1(), low_noise_bundle.l3(), bucket_ns=BUCKET_NS
+        low_noise_bundle.l1(), low_noise_bundle.l3(), session=SESSION, bucket_ns=BUCKET_NS
     )
 
     for symbol in LOW_NOISE.symbols:
@@ -97,7 +100,7 @@ def test_recovers_delta_under_realistic_diffusion_noise(realistic_bundle):
     """
     gt = realistic_bundle.manifest.extra["ground_truth"]
     results = calibrate_bundle(
-        realistic_bundle, bucket_ns=BUCKET_NS, sigma=dict.fromkeys(
+        realistic_bundle, session=SESSION, bucket_ns=BUCKET_NS, sigma=dict.fromkeys(
             REALISTIC.symbols, gt["sigma_bucket"]
         )
     )
@@ -122,7 +125,7 @@ def test_estimate_bucket_sigma_is_in_the_right_ballpark(realistic_bundle):
 
 
 def test_calibrate_bundle_estimates_sigma_when_not_supplied(realistic_bundle):
-    results = calibrate_bundle(realistic_bundle, bucket_ns=BUCKET_NS)
+    results = calibrate_bundle(realistic_bundle, session=SESSION, bucket_ns=BUCKET_NS)
     assert set(results) == set(REALISTIC.symbols)
     assert all(0.0 < r.delta <= 1.0 for r in results.values())
 
@@ -132,7 +135,7 @@ def test_to_model_round_trips_into_a_usable_impact_model(low_noise_bundle):
 
     gt = low_noise_bundle.manifest.extra["ground_truth"]
     obs = observations_from_buckets(
-        low_noise_bundle.l1(), low_noise_bundle.l3(), bucket_ns=BUCKET_NS
+        low_noise_bundle.l1(), low_noise_bundle.l3(), session=SESSION, bucket_ns=BUCKET_NS
     )
     model = fit_power_law(
         obs.filter(pl.col("symbol") == "SYNA"), sigma=gt["sigma_bucket"]
@@ -155,3 +158,85 @@ def test_too_few_bins_is_rejected():
     )
     with pytest.raises(CalibrationError, match="bins"):
         fit_power_law(obs, sigma=0.005, n_bins=20)
+
+
+def _dense_nyse_quotes(days, *, bucket_ns, jump):
+    """L1 and L3 spanning ``days`` continuously, including pre- and post-market.
+
+    A real L1 export quotes through the extended session, which is what makes
+    epoch-floored bucketing dangerous: the overnight window becomes contiguous
+    in bucket_id, so the gap filter ``bucket_id - prev_bucket == 1`` admits
+    every overnight return as if it were intraday impact.
+    """
+    import polars as pl
+
+    l1_rows, l3_rows = [], []
+    price = 100.0
+    ts = NYSE.open_ns(days[0]) + bucket_ns
+    end = NYSE.open_ns(days[-1]) + NYSE.length_ns
+    while ts <= end:
+        # Step the price by `jump` exactly once, across the first overnight gap.
+        if NYSE.open_ns(days[0]) + NYSE.length_ns < ts <= NYSE.open_ns(days[1]):
+            price = 100.0 * (1.0 + jump)
+        l1_rows.append(
+            {
+                "ts_ns": ts, "symbol": "AAA",
+                "bid": price - 0.01, "ask": price + 0.01,
+                "bid_size": 100, "ask_size": 100, "last_px": price, "last_size": 10,
+            }
+        )
+        l3_rows.append(
+            {
+                "ts_ns": ts - 1, "seq": len(l3_rows), "symbol": "AAA",
+                "order_id": len(l3_rows) + 1, "action": "execute", "side": "sell",
+                "px": price, "size": 100,
+            }
+        )
+        ts += bucket_ns
+    return pl.DataFrame(l1_rows), pl.DataFrame(l3_rows)
+
+
+def test_out_of_session_quotes_are_rejected_rather_than_misbucketed():
+    import datetime as dt
+
+    bucket_ns = NYSE.length_ns // 20
+    l1, l3 = _dense_nyse_quotes(
+        [dt.date(2026, 3, 3), dt.date(2026, 3, 4)], bucket_ns=bucket_ns, jump=0.20
+    )
+    with pytest.raises(OutOfSessionError, match="L1 quote"):
+        observations_from_buckets(l1, l3, session=NYSE, bucket_ns=bucket_ns)
+
+
+def test_overnight_gap_is_excluded_on_a_real_nyse_calendar():
+    """THE P5 REGRESSION.
+
+    With quotes spanning the extended session, epoch-floored bucketing makes
+    the whole overnight window contiguous: all 92 transitions in this fixture
+    have ``bucket_id - prev_bucket == 1``, so the 20% overnight jump is scored
+    as intraday impact. Session-relative bucketing sees only the 40 in-session
+    quotes and drops each session's first bucket, so the jump cannot appear.
+    """
+    import datetime as dt
+
+    bpd = 20
+    bucket_ns = NYSE.length_ns // bpd
+    l1, l3 = _dense_nyse_quotes(
+        [dt.date(2026, 3, 3), dt.date(2026, 3, 4)], bucket_ns=bucket_ns, jump=0.20
+    )
+
+    obs = observations_from_buckets(
+        l1, l3, session=NYSE, bucket_ns=bucket_ns, allow_out_of_session=True
+    )
+
+    assert obs.height == 2 * (bpd - 1), "each session must lose exactly its first bucket"
+    assert obs["impact"].abs().max() < 1e-9, (
+        "the 20% overnight return leaked into the intraday impact observations"
+    )
+
+
+def test_bucket_width_that_does_not_divide_the_session_is_rejected(realistic_bundle):
+    """The old calibrate_bundle rounded 6.5 buckets/day to 6: a silent 4.1% sigma error."""
+    from quantic.core.session import SessionError
+
+    with pytest.raises(SessionError, match="does not divide"):
+        calibrate_bundle(realistic_bundle, session=SESSION, bucket_ns=3600 * 1_000_000_000)
