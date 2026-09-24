@@ -32,14 +32,87 @@ def _split(value: str) -> tuple[str, ...]:
     return tuple(s.strip() for s in value.split(",") if s.strip())
 
 
+def _parse_overrides(flag: str, value: str, symbols: tuple[str, ...]) -> dict[str, float] | None:
+    """Parse ``SYMBOL=VALUE,SYMBOL=VALUE`` into a mapping, or None if empty."""
+    if not value.strip():
+        return None
+    out: dict[str, float] = {}
+    for item in _split(value):
+        symbol, sep, raw = item.partition("=")
+        if not sep:
+            raise typer.BadParameter(
+                f"{flag} expects SYMBOL=VALUE pairs, got {item!r}", param_hint=flag
+            )
+        try:
+            out[symbol.strip()] = float(raw)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"{flag} value for {symbol.strip()!r} is not a number: {raw!r}",
+                param_hint=flag,
+            ) from exc
+    unknown = sorted(set(out) - set(symbols))
+    if unknown:
+        raise typer.BadParameter(
+            f"{flag} names symbol(s) {unknown} that are not in --symbols "
+            f"{sorted(symbols)}",
+            param_hint=flag,
+        )
+    missing = sorted(set(symbols) - set(out))
+    if missing:
+        raise typer.BadParameter(
+            f"{flag} must cover every symbol; missing {missing}", param_hint=flag
+        )
+    return out
+
+
 @data_app.command("synth")
 def synth(
     out: Annotated[Path, typer.Option("--out", help="Directory to write the bundle into.")],
     symbols: Annotated[str, typer.Option("--symbols")] = "SYNA,SYNB,SYNC",
     days: Annotated[int, typer.Option("--days")] = 20,
-    buckets: Annotated[int, typer.Option("--buckets")] = 13,
+    buckets: Annotated[
+        int,
+        typer.Option("--buckets", help="Buckets per session; must divide 23400s exactly."),
+    ] = 13,
     seed: Annotated[int, typer.Option("--seed")] = 0,
+    start_date: Annotated[
+        str, typer.Option("--start-date", help="ISO date of the first session.")
+    ] = "2026-01-05",
+    base_price: Annotated[float, typer.Option("--base-price")] = 100.0,
+    daily_vol: Annotated[
+        float, typer.Option("--daily-vol", help="Fractional daily volatility.")
+    ] = 0.02,
+    adv_shares: Annotated[int, typer.Option("--adv-shares")] = 100_000,
+    tick_size: Annotated[float, typer.Option("--tick-size")] = 0.01,
+    lot_size: Annotated[int, typer.Option("--lot-size")] = 100,
     depth_levels: Annotated[int, typer.Option("--depth-levels")] = 10,
+    level_size: Annotated[int, typer.Option("--level-size")] = 1_000,
+    flow_sd: Annotated[
+        float,
+        typer.Option("--flow-sd", help="Std dev of per-bucket net order-flow imbalance."),
+    ] = 0.08,
+    noise_frac: Annotated[
+        float,
+        typer.Option(
+            "--noise-frac",
+            help="Diffusion weight against impact. Total bucket variance is held at "
+            "sigma_bucket^2 either way, so this sets the split. 1.0 is the realistic "
+            "regime; lower it to make impact recoverable.",
+        ),
+    ] = 1.0,
+    impact_delta: Annotated[
+        str,
+        typer.Option(
+            "--impact-delta",
+            help="Per-symbol true exponent as SYMBOL=VALUE,SYMBOL=VALUE.",
+        ),
+    ] = "",
+    impact_y: Annotated[
+        str,
+        typer.Option(
+            "--impact-y", help="Per-symbol true coefficient as SYMBOL=VALUE,SYMBOL=VALUE."
+        ),
+    ] = "",
     bundle_id: Annotated[
         str | None,
         typer.Option(
@@ -49,14 +122,40 @@ def synth(
     ] = None,
     catalog: Annotated[Path, typer.Option("--catalog")] = DEFAULT_CATALOG_PATH,
 ) -> None:
-    """Generate a synthetic bundle with known ground-truth impact parameters."""
-    cfg = SynthConfig(
-        symbols=_split(symbols),
-        n_days=days,
-        buckets_per_day=buckets,
-        seed=seed,
-        depth_levels=depth_levels,
-    )
+    """Generate a synthetic bundle with known ground-truth impact parameters.
+
+    Every ``SynthConfig`` field is reachable here. It used to expose 5 of 16,
+    so a calibration-grade fixture had to be built with a Python script --
+    and ``--noise-frac``, the one knob that decides whether impact
+    calibration works at all, was among the unreachable ones.
+    """
+    parsed_symbols = _split(symbols)
+    try:
+        cfg = SynthConfig(
+            symbols=parsed_symbols,
+            n_days=days,
+            buckets_per_day=buckets,
+            seed=seed,
+            start_date=dt.date.fromisoformat(start_date),
+            base_price=base_price,
+            daily_vol=daily_vol,
+            adv_shares=adv_shares,
+            tick_size=tick_size,
+            lot_size=lot_size,
+            depth_levels=depth_levels,
+            level_size=level_size,
+            flow_sd=flow_sd,
+            noise_frac=noise_frac,
+            impact_delta=_parse_overrides("--impact-delta", impact_delta, parsed_symbols),
+            impact_Y=_parse_overrides("--impact-y", impact_y, parsed_symbols),
+        )
+    except typer.BadParameter as exc:
+        console.print(f"[red]{exc.message}[/red]")
+        raise typer.Exit(code=1) from exc
+    except (ValueError, SessionError) as exc:
+        console.print(f"[red]invalid configuration:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
     bundle = generate_bundle(out, cfg, bundle_id=bundle_id)
     try:
         entry = Catalog(catalog).register(bundle)

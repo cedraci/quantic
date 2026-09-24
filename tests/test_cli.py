@@ -266,3 +266,102 @@ def test_ingest_reports_a_bad_export_without_a_traceback(tmp_path):
     assert result.exit_code == 1
     assert "daily_bars" in result.output
     assert "Traceback" not in result.output
+
+
+# --- 4.5: the synth CLI must reach every knob that matters -----------------
+
+
+def _synth_config_from(out: Path) -> dict:
+    return json.loads((out / MANIFEST_FILENAME).read_text())["extra"]["synth_config"]
+
+
+def test_synth_exposes_every_synthconfig_field():
+    """Finding 4.5: 5 of 16 fields were reachable, so the calibration-grade
+    fixture had to be built with a Python script. `noise_frac` in particular
+    is the single knob that decides whether impact calibration works at all."""
+    import dataclasses
+
+    from quantic.data.synth import SynthConfig
+
+    result = runner.invoke(app, ["data", "synth", "--help"])
+    help_text = result.output
+    expected = {
+        "symbols": "--symbols", "n_days": "--days", "buckets_per_day": "--buckets",
+        "seed": "--seed", "start_date": "--start-date", "base_price": "--base-price",
+        "daily_vol": "--daily-vol", "adv_shares": "--adv-shares",
+        "tick_size": "--tick-size", "lot_size": "--lot-size",
+        "depth_levels": "--depth-levels", "level_size": "--level-size",
+        "flow_sd": "--flow-sd", "noise_frac": "--noise-frac",
+        "impact_delta": "--impact-delta", "impact_Y": "--impact-y",
+    }
+    assert set(expected) == {f.name for f in dataclasses.fields(SynthConfig)}
+
+    # Typer wraps long help; strip newlines so a wrapped flag still matches.
+    flat = help_text.replace("\n", " ")
+    missing = [flag for flag in expected.values() if flag not in flat]
+    assert not missing, f"unreachable from the CLI: {missing}"
+
+
+def test_synth_knobs_reach_the_generator(tmp_path):
+    out = tmp_path / "synth"
+    result = runner.invoke(
+        app,
+        ["data", "synth", "--out", str(out), "--symbols", "AAA",
+         "--days", "2", "--buckets", "3", "--depth-levels", "3",
+         "--noise-frac", "0.05", "--base-price", "1000", "--daily-vol", "0.03",
+         "--adv-shares", "250000", "--flow-sd", "0.12", "--level-size", "500",
+         "--tick-size", "0.05", "--lot-size", "50", "--start-date", "2026-02-02",
+         "--catalog", str(tmp_path / "c.json")],
+    )
+    assert result.exit_code == 0, result.output
+
+    cfg = _synth_config_from(out)
+    assert cfg["noise_frac"] == 0.05
+    assert cfg["base_price"] == 1000.0
+    assert cfg["daily_vol"] == 0.03
+    assert cfg["adv_shares"] == 250_000
+    assert cfg["flow_sd"] == 0.12
+    assert cfg["level_size"] == 500
+    assert cfg["tick_size"] == 0.05
+    assert cfg["lot_size"] == 50
+    assert cfg["start_date"] == "2026-02-02"
+
+
+def test_synth_accepts_per_symbol_impact_parameters(tmp_path):
+    out = tmp_path / "synth"
+    result = runner.invoke(
+        app,
+        ["data", "synth", "--out", str(out), "--symbols", "AAA,BBB",
+         "--days", "2", "--buckets", "3", "--depth-levels", "3",
+         "--impact-delta", "AAA=0.4,BBB=0.7", "--impact-y", "AAA=0.5,BBB=1.2",
+         "--catalog", str(tmp_path / "c.json")],
+    )
+    assert result.exit_code == 0, result.output
+
+    gt = json.loads((out / MANIFEST_FILENAME).read_text())["extra"]["ground_truth"]
+    assert gt["impact_delta"] == {"AAA": 0.4, "BBB": 0.7}
+    assert gt["impact_Y_configured"] == {"AAA": 0.5, "BBB": 1.2}
+
+
+def test_a_malformed_impact_override_is_reported_clearly(tmp_path):
+    result = runner.invoke(
+        app,
+        ["data", "synth", "--out", str(tmp_path / "s"), "--symbols", "AAA",
+         "--days", "2", "--buckets", "3", "--impact-delta", "AAA:0.4",
+         "--catalog", str(tmp_path / "c.json")],
+    )
+    assert result.exit_code == 1
+    assert "impact-delta" in result.output or "SYMBOL=VALUE" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_an_override_for_an_unknown_symbol_is_reported(tmp_path):
+    result = runner.invoke(
+        app,
+        ["data", "synth", "--out", str(tmp_path / "s"), "--symbols", "AAA",
+         "--days", "2", "--buckets", "3", "--impact-delta", "ZZZ=0.4",
+         "--catalog", str(tmp_path / "c.json")],
+    )
+    assert result.exit_code == 1
+    assert "ZZZ" in result.output
+    assert "Traceback" not in result.output
