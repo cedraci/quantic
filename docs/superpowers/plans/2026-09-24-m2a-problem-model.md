@@ -2117,10 +2117,16 @@ def test_duplicate_constraint_names_are_rejected():
         classify(inst, inst.witness)
 
 
-def test_the_report_is_hashable_and_frozen():
+def test_the_report_is_frozen():
+    """Assert the specific exception, not any exception.
+
+    A blind ``pytest.raises(Exception)`` here would pass on an
+    ``AttributeError`` from a mistyped field name, proving nothing about
+    immutability. ruff's B017 flags exactly that.
+    """
     inst = _instance()
     report = classify(inst, inst.witness)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         report.feasible = False       # type: ignore[misc]
 ```
 
