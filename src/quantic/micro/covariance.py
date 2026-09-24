@@ -10,9 +10,17 @@ from sklearn.covariance import LedoitWolf
 
 MIN_OBSERVATIONS = 5
 
+# Ceiling on the share of dates a ragged cross-section may cost, before the
+# estimate is refused rather than quietly computed on what is left.
+DEFAULT_MAX_DROPPED_FRACTION = 0.10
+
 
 class InsufficientHistoryError(ValueError):
     """Raised when there are too few return observations to estimate covariance."""
+
+
+class DuplicateObservationError(ValueError):
+    """Raised when a (date, symbol) pair appears more than once in daily bars."""
 
 
 @dataclass(frozen=True)
@@ -57,7 +65,46 @@ class CovarianceEstimate:
         return pl.DataFrame(data)
 
 
-def log_returns(daily: pl.DataFrame) -> pl.DataFrame:
+def log_returns(
+    daily: pl.DataFrame,
+    *,
+    max_dropped_fraction: float = DEFAULT_MAX_DROPPED_FRACTION,
+) -> pl.DataFrame:
+    """Wide log returns, one column per symbol, with ragged coverage bounded.
+
+    The pivot-then-``drop_nulls`` shape is inherently all-or-nothing across
+    the cross-section: a null for any one symbol removes that date for *every*
+    symbol, including symbols with complete coverage. Measured on 5 symbols
+    over 60 days with one symbol missing 10 scattered days, that cost 18 of 59
+    rows -- 30% of the cross-section.
+
+    Real coverage is ragged through halts, staggered listings and venue
+    holidays, so this cannot be prevented here; it can only be *bounded and
+    reported*. Beyond ``max_dropped_fraction`` the estimate is refused, naming
+    the count and the symbols responsible, rather than silently computed on a
+    third less data than the caller believes they supplied.
+    """
+    if not 0.0 <= max_dropped_fraction <= 1.0:
+        raise ValueError(
+            f"max_dropped_fraction must lie in [0, 1], got {max_dropped_fraction}"
+        )
+
+    duplicates = (
+        daily.group_by(["date", "symbol"])
+        .len()
+        .filter(pl.col("len") > 1)
+        .sort(["date", "symbol"])
+    )
+    if duplicates.height:
+        row = duplicates.row(0, named=True)
+        symbols = sorted(set(duplicates["symbol"].to_list()))
+        raise DuplicateObservationError(
+            f"{duplicates.height} duplicated (date, symbol) pair(s) in daily bars for "
+            f"{symbols} (example: symbol={row['symbol']} date={row['date']} appears "
+            f"{row['len']} times). A pivot cannot resolve which close is authoritative; "
+            "de-duplicate at ingest"
+        )
+
     wide = (
         daily.select("date", "symbol", "close")
         .sort(["date", "symbol"])
@@ -65,9 +112,35 @@ def log_returns(daily: pl.DataFrame) -> pl.DataFrame:
         .sort("date")
     )
     symbols = [c for c in wide.columns if c != "date"]
-    return wide.with_columns(
+    returns = wide.with_columns(
         [(pl.col(s) / pl.col(s).shift(1)).log().alias(s) for s in symbols]
-    ).drop_nulls()
+    )
+
+    # Row 0 is null by construction (no prior close), so it is not a coverage
+    # loss and must not count against the budget.
+    candidate = returns.slice(1)
+    kept = candidate.drop_nulls()
+    dropped = candidate.height - kept.height
+
+    if candidate.height and dropped / candidate.height > max_dropped_fraction:
+        culprits = {
+            s: int(candidate[s].is_null().sum())
+            for s in symbols
+            if candidate[s].is_null().any()
+        }
+        detail = ", ".join(
+            f"{sym}: {n} missing" for sym, n in sorted(culprits.items(), key=lambda kv: -kv[1])
+        )
+        raise InsufficientHistoryError(
+            f"ragged coverage dropped {dropped} of {candidate.height} dates "
+            f"({dropped / candidate.height:.1%}), above the "
+            f"{max_dropped_fraction:.0%} limit. A null for any one symbol removes that "
+            f"date for the whole cross-section. Per-symbol gaps: {detail}. Raise "
+            "max_dropped_fraction to accept the loss deliberately, or narrow the "
+            "symbol set"
+        )
+
+    return kept
 
 
 def estimate_covariance(

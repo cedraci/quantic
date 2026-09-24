@@ -5,6 +5,7 @@ import polars as pl
 import pytest
 
 from quantic.micro.covariance import (
+    DuplicateObservationError,
     InsufficientHistoryError,
     estimate_covariance,
     log_returns,
@@ -109,3 +110,79 @@ def test_negative_close_raises_with_named_symbol(method: str):
 def test_clean_frame_still_works_for_both_methods(method: str):
     est = estimate_covariance(_daily(n_days=30, n_symbols=2), method=method)
     assert np.isfinite(est.matrix).all()
+
+
+# --- P4: ragged real-world coverage ----------------------------------------
+
+
+def _ragged_daily(n_days=60, n_symbols=5, missing_for="SYM0", n_missing=10):
+    """Daily bars where one symbol is missing scattered days.
+
+    Real coverage is ragged through halts, staggered listings and venue
+    holidays. `log_returns` pivots wide and then calls `drop_nulls()`, so one
+    symbol's gap removes that date for *every* symbol -- including symbols
+    with complete coverage.
+    """
+    import datetime as dt
+
+    rng = np.random.default_rng(0)
+    start = dt.date(2026, 1, 5)
+    dates = [start + dt.timedelta(days=i) for i in range(n_days)]
+    gaps = set(rng.choice(range(1, n_days), size=n_missing, replace=False).tolist())
+
+    rows = []
+    for j in range(n_symbols):
+        symbol = f"SYM{j}"
+        price = 100.0
+        for i, date in enumerate(dates):
+            price *= float(np.exp(rng.normal(0.0, 0.01)))
+            if symbol == missing_for and i in gaps:
+                continue
+            rows.append({"date": date, "symbol": symbol, "close": price})
+    return pl.DataFrame(rows)
+
+
+def test_ragged_coverage_raises_rather_than_silently_shrinking_the_cross_section():
+    daily = _ragged_daily()
+    with pytest.raises(InsufficientHistoryError, match="dropped|coverage"):
+        log_returns(daily)
+
+
+def test_the_dropped_count_and_the_responsible_symbol_are_named():
+    daily = _ragged_daily()
+    try:
+        log_returns(daily)
+    except InsufficientHistoryError as exc:
+        message = str(exc)
+    assert "SYM0" in message, "the message must name which symbol caused the loss"
+    assert "10" in message or "18" in message, "the message must quantify the loss"
+
+
+def test_a_caller_can_widen_the_tolerance_deliberately():
+    daily = _ragged_daily()
+    returns = log_returns(daily, max_dropped_fraction=0.5)
+    assert returns.height > 0
+
+
+def test_small_ragged_gaps_are_within_the_default_tolerance():
+    daily = _ragged_daily(n_days=100, n_missing=2)
+    assert log_returns(daily).height > 0
+
+
+def test_duplicate_date_symbol_rows_raise_a_typed_error():
+    """A duplicated (date, symbol) row is the most common real-export defect.
+
+    It previously surfaced as a raw polars ComputeError from the pivot, which
+    a caller cannot catch alongside the module's own errors.
+    """
+    import datetime as dt
+
+    daily = pl.DataFrame(
+        {
+            "date": [dt.date(2026, 1, 5), dt.date(2026, 1, 5), dt.date(2026, 1, 6)],
+            "symbol": ["AAA", "AAA", "AAA"],
+            "close": [100.0, 101.0, 102.0],
+        }
+    )
+    with pytest.raises(DuplicateObservationError, match="AAA"):
+        log_returns(daily)
