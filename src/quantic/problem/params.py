@@ -20,8 +20,13 @@ import numpy as np
 from quantic.micro.impact.base import ImpactParams
 
 # Ledoit-Wolf output is PSD up to floating-point noise, so an exactly-zero
-# floor would reject valid estimates. Scaled by the largest eigenvalue so the
-# tolerance means the same thing at any magnitude.
+# floor would reject valid estimates. The floor is scaled by the matrix's own
+# largest eigenvalue, with NO absolute fallback: a bucket-horizon log-return
+# covariance has eigenvalues around 1e-5, so clamping the scale to a minimum
+# of 1.0 would turn this into a fixed -1e-10 floor and admit a genuinely
+# negative eigenvalue five orders of magnitude above the noise. `eigvalsh`
+# rounding noise is about eps*|A| ~ 2.2e-16 relative, so a 1e-10 relative
+# floor still leaves ~450,000x headroom against false rejection.
 _PSD_RTOL = 1e-10
 
 
@@ -107,7 +112,7 @@ class MarketParams:
             raise ValueError("covariance must be symmetric")
 
         eigenvalues = np.linalg.eigvalsh(cov)
-        floor = -_PSD_RTOL * max(float(np.max(np.abs(eigenvalues))), 1.0)
+        floor = -_PSD_RTOL * float(np.max(np.abs(eigenvalues)))
         if float(eigenvalues.min()) < floor:
             raise ValueError(
                 f"covariance is not positive semi-definite (smallest eigenvalue "

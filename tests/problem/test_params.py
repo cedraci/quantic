@@ -103,11 +103,34 @@ def test_a_covariance_of_the_wrong_size_is_rejected():
         MarketParams(assets=(_asset("A"),), covariance=np.eye(3) * 1e-5, bucket_ns=BUCKET_NS)
 
 
-def test_a_tiny_negative_eigenvalue_from_rounding_is_tolerated():
-    """Ledoit-Wolf output is PSD up to floating-point noise; reject only real violations."""
+def _with_smallest_eigenvalue(delta: float) -> np.ndarray:
+    """A symmetric 2x2 at 1e-5 scale whose smallest eigenvalue is exactly -delta."""
     cov = np.eye(2) * 1e-5
-    cov[0, 0] -= 1e-20
+    cov[0, 1] = cov[1, 0] = 1e-5 + delta
+    return cov
+
+
+def test_rounding_scale_negative_eigenvalues_are_tolerated():
+    """Ledoit-Wolf output is PSD only up to floating-point noise.
+
+    -1e-16 against a 2e-5 largest eigenvalue is 5e-12 relative, well inside
+    the 1e-10 relative floor.
+    """
+    cov = _with_smallest_eigenvalue(1e-16)
+    assert np.linalg.eigvalsh(cov).min() < 0, "fixture is not actually non-PSD"
     MarketParams(assets=(_asset("A"), _asset("B")), covariance=cov, bucket_ns=BUCKET_NS)
+
+
+def test_a_genuinely_negative_eigenvalue_is_rejected_even_when_small():
+    """The regression that matters.
+
+    -1e-12 against a 2e-5 largest eigenvalue is 5e-8 relative -- four orders
+    of magnitude above rounding noise, and a real direction in which the risk
+    term is unbounded below. An absolute -1e-10 floor would accept it.
+    """
+    cov = _with_smallest_eigenvalue(1e-12)
+    with pytest.raises(ValueError, match="positive semi-definite|PSD"):
+        MarketParams(assets=(_asset("A"), _asset("B")), covariance=cov, bucket_ns=BUCKET_NS)
 
 
 @pytest.mark.parametrize(
