@@ -32,6 +32,21 @@ def _observed_levels(snap: BookSnapshot, side: str) -> list[tuple[float, int]]:
     return [(lvl.price, lvl.size) for lvl in levels]
 
 
+def _expected_levels(
+    sym_l2: pl.DataFrame,
+) -> dict[tuple[int, str], list[tuple[float, int]]]:
+    """Published levels keyed by ``(ts_ns, side)``, built in a single pass."""
+    grouped: dict[tuple[int, str], list[tuple[float, int]]] = {}
+    ordered = sym_l2.sort(["ts_ns", "side", "level"]).select(
+        "ts_ns", "side", "px", "size"
+    ).to_dict(as_series=False)
+    for ts_ns, side, px, size in zip(
+        ordered["ts_ns"], ordered["side"], ordered["px"], ordered["size"], strict=True
+    ):
+        grouped.setdefault((ts_ns, side), []).append((px, size))
+    return grouped
+
+
 def compare_to_l2(
     l3: pl.DataFrame,
     l2: pl.DataFrame,
@@ -66,15 +81,14 @@ def compare_to_l2(
         ts_list = sorted(sym_l2["ts_ns"].unique().to_list())
         snaps = snapshots_at(sym_l3, ts_list, levels=levels)
 
+        # Group once, up front. Filtering the symbol's whole L2 frame inside
+        # the loop makes the comparison O(snapshots x l2_rows); at real L3
+        # densities that term dominates.
+        expected_by_ts = _expected_levels(sym_l2)
+
         for ts_ns, snap in zip(ts_list, snaps, strict=True):
-            at_ts = sym_l2.filter(pl.col("ts_ns") == ts_ns)
             for side in ("buy", "sell"):
-                expected = (
-                    at_ts.filter(pl.col("side") == side)
-                    .sort("level")
-                    .select("px", "size")
-                    .rows()
-                )
+                expected = expected_by_ts.get((ts_ns, side), [])
                 actual = _observed_levels(snap, side)
 
                 if len(expected) != len(actual):

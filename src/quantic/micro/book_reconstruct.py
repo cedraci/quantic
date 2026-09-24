@@ -122,12 +122,15 @@ def snapshots_at(
     out: dict[int, BookSnapshot] = {}
     cursor = 0
 
-    for row in messages.sort(["ts_ns", "seq"]).iter_rows(named=True):
-        while cursor < len(ordered) and row["ts_ns"] > ts_list[ordered[cursor]]:
+    # Columns as plain lists, not a dict per row. `iter_rows(named=True)`
+    # allocates a fresh dict for every message, which dominates replay cost --
+    # and one liquid US name is O(10^6) messages per day.
+    for ts_ns, action, order_id, side, px, size in _message_columns(messages):
+        while cursor < len(ordered) and ts_ns > ts_list[ordered[cursor]]:
             idx = ordered[cursor]
             out[idx] = builder.snapshot(ts_list[idx], levels)
             cursor += 1
-        builder.apply(row["action"], row["order_id"], row["side"], row["px"], row["size"])
+        builder.apply(action, order_id, side, px, size)
 
     while cursor < len(ordered):
         idx = ordered[cursor]
@@ -141,7 +144,24 @@ def final_book(messages: pl.DataFrame, *, levels: int, strict: bool = True) -> B
     symbol = _single_symbol(messages)
     builder = BookBuilder(symbol, strict=strict)
     last_ts = 0
-    for row in messages.sort(["ts_ns", "seq"]).iter_rows(named=True):
-        builder.apply(row["action"], row["order_id"], row["side"], row["px"], row["size"])
-        last_ts = row["ts_ns"]
+    for ts_ns, action, order_id, side, px, size in _message_columns(messages):
+        builder.apply(action, order_id, side, px, size)
+        last_ts = ts_ns
     return builder.snapshot(last_ts, levels)
+
+
+def _message_columns(messages: pl.DataFrame) -> zip:
+    """Messages in replay order as a tuple stream, one pass, no per-row dicts."""
+    ordered = messages.sort(["ts_ns", "seq"])
+    columns = ordered.select(
+        "ts_ns", "action", "order_id", "side", "px", "size"
+    ).to_dict(as_series=False)
+    return zip(
+        columns["ts_ns"],
+        columns["action"],
+        columns["order_id"],
+        columns["side"],
+        columns["px"],
+        columns["size"],
+        strict=True,
+    )
