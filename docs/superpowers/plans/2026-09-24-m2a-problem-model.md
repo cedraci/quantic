@@ -2200,7 +2200,8 @@ git commit -m "feat(problem): add classify, the single feasibility implementatio
 
 1. `spread = sum half_spread[i] * q[i,t]`
 2. `temporary = sum model_i.temporary_cost(q, p_i) * q[i,t] * price[i]` — `PowerLawImpact` when D1 is on, `AlmgrenChriss` when off. **This is the only term D1 changes.**
-3. `permanent = sum gamma[i] * sigma[i] * (cum_before[i,t] / V[i]) * q[i,t] * price[i]`
+3. `permanent = sum gamma[i] * sigma[i] * ((cum_before[i,t] + q[i,t]/2) / V[i]) * q[i,t] * price[i]`
+   — the **midpoint** convention: we trade through our own permanent displacement and pay half of it on average. This is standard Almgren-Chriss, and it is what makes the term path-independent.
 4. `risk = lam * sum over t of h_t @ Sigma_price @ h_t`
 
 - [ ] **Step 1: Write the failing test**
@@ -2545,10 +2546,14 @@ def evaluate(instance: Instance, schedule: Schedule) -> ObjectiveBreakdown:
                 continue
             spread += a.half_spread * traded
             temporary += model.temporary_cost(traded, p) * traded * a.price
+            # Midpoint: the displacement already caused, plus half of our own,
+            # because we trade through it. Using cum_before alone makes the
+            # term path-dependent and understates it by sum(q**2) / 2.
+            displaced = float(cum_before[i, t]) + traded / 2.0
             permanent += (
                 a.gamma
                 * a.sigma_bucket
-                * (float(cum_before[i, t]) / a.bucket_volume_shares)
+                * (displaced / a.bucket_volume_shares)
                 * traded
                 * a.price
             )

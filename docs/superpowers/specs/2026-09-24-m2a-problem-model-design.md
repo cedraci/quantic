@@ -340,11 +340,19 @@ in any of them is invisible in the output:
    `AlmgrenChriss` linear impact when it is off. This term is the only thing D1
    changes, and a test asserts that.
 3. **Permanent impact.**
-   `sum over (i,t) of gamma[i] * sigma[i] * (cum_before[i,t] / V[i]) * q[i,t] * price[i]`
-   — we pay the displacement we have already caused. With linear permanent
-   impact this term is **path-independent**, summing to
-   `0.5 * gamma * sigma * X**2 / V * price` for full liquidation. That is a
-   sharp, cheap test of the whole term.
+   `sum over (i,t) of gamma[i] * sigma[i] * ((cum_before[i,t] + q[i,t]/2) / V[i]) * q[i,t] * price[i]`
+
+   The **midpoint** convention: we pay the displacement already caused *plus
+   half of our own*, because our order trades through its own permanent
+   impact. This is standard Almgren-Chriss, and it is what makes the term
+   path-independent, summing to `0.5 * gamma * sigma * X**2 / V * price` for
+   full liquidation regardless of the schedule.
+
+   Using `cum_before` alone would be path-**dependent** and understate the
+   term by `sum over t of q**2 / 2`. Measured on a 400-share liquidation over
+   two buckets: the exclusive form gives 0.0050 for an even schedule and
+   0.0000 for a front-loaded one, against the closed form's 0.0100; the
+   midpoint form gives 0.0100 for both.
 4. **Risk.** `lam * sum over t of h_t @ Sigma_price @ h_t`, with `h_t` in shares.
    The bucket horizon is already inside `Sigma_price` (§4), so spec §5.2's `tau`
    does not appear.
