@@ -8,9 +8,10 @@ from quantic.problem.constraints.min_participation import MinParticipation
 from quantic.problem.dials import Dials
 from quantic.problem.feasibility import classify
 from quantic.problem.generator import InstanceGenerationError, generate
-from quantic.problem.liquidation import LADDER, T0, T1, T3
-from quantic.problem.objective import evaluate
+from quantic.problem.liquidation import LADDER, T0, T1, T2, T3
+from quantic.problem.objective import evaluate, optimal_zeta
 from quantic.problem.params import AssetParams, MarketParams
+from quantic.problem.risk import CVaRRisk, VarianceRisk
 
 BUCKET_NS = 1800 * 1_000_000_000
 
@@ -191,3 +192,83 @@ def test_surplus_assets_in_params_are_narrowed_to_the_tier():
     inst = generate(T0, Dials(), _params(10), seed=0)
     assert inst.n_assets == T0.n_assets
     assert inst.params.n_assets == T0.n_assets
+
+
+CVAR_KW = {"n_raw": 300, "n_target": 15}
+
+
+def test_d3_off_still_builds_a_variance_risk():
+    inst = _gen(T1, Dials())
+    assert isinstance(inst.risk, VarianceRisk)
+
+
+def test_d3_on_builds_a_cvar_risk_with_a_reduced_scenario_set():
+    inst = _gen(T1, Dials(cvar_risk=True), **CVAR_KW)
+    assert isinstance(inst.risk, CVaRRisk)
+    assert inst.risk.scenarios.n_scenarios == 15
+    assert inst.risk.scenarios.reduction is not None
+
+
+def test_the_scenario_set_matches_the_instance_shape():
+    inst = _gen(T2, Dials(cvar_risk=True), **CVAR_KW)
+    assert inst.risk.scenarios.n_buckets == T2.n_buckets
+    assert inst.risk.scenarios.n_assets == T2.n_assets
+
+
+def test_the_reduction_report_carries_its_cvar_diagnostics():
+    """Spec 5.4 requires the reduction error reported alongside every result."""
+    inst = _gen(T1, Dials(cvar_risk=True), **CVAR_KW)
+    report = inst.risk.scenarios.reduction
+    assert report.cvar_raw is not None
+    assert report.cvar_reduced is not None
+    assert report.cvar_discrepancy == pytest.approx(report.cvar_reduced - report.cvar_raw)
+    assert report.wasserstein > 0.0
+
+
+def test_the_cvar_witness_is_feasible():
+    inst = _gen(T1, Dials(cvar_risk=True), **CVAR_KW)
+    assert classify(inst, inst.witness).feasible
+
+
+def test_lam_is_auto_scaled_so_cvar_balances_cost_at_the_witness():
+    inst = _gen(T1, Dials(cvar_risk=True), **CVAR_KW)
+    b = evaluate(inst, inst.witness, zeta=optimal_zeta(inst, inst.witness))
+    costs = b.spread_cost + b.temporary_impact_cost + b.permanent_impact_cost
+    assert b.risk_cost == pytest.approx(costs, rel=1e-6)
+
+
+def test_an_explicit_alpha_is_respected():
+    inst = _gen(T1, Dials(cvar_risk=True), alpha=0.9, **CVAR_KW)
+    assert inst.risk.alpha == 0.9
+
+
+def test_d3_changes_no_constraint():
+    off = _gen(T1, Dials())
+    on = _gen(T1, Dials(cvar_risk=True), **CVAR_KW)
+    assert [c.describe() for c in off.constraints] == [c.describe() for c in on.constraints]
+
+
+def test_cvar_generation_is_deterministic():
+    a = _gen(T1, Dials(cvar_risk=True), seed=5, **CVAR_KW)
+    b = _gen(T1, Dials(cvar_risk=True), seed=5, **CVAR_KW)
+    assert a.content_hash == b.content_hash
+
+
+def test_a_supplied_raw_scenario_set_is_used():
+    from quantic.problem.scenarios import generate_scenarios
+
+    params = _params(T1.n_assets)
+    raw = generate_scenarios(params, T1.n_buckets, seed=77, n_raw=300)
+    inst = generate(
+        T1, Dials(cvar_risk=True), params, seed=0, scenarios=raw, n_target=15
+    )
+    assert inst.risk.scenarios.seed == 77
+
+
+def test_a_scenario_set_of_the_wrong_shape_is_rejected():
+    from quantic.problem.scenarios import generate_scenarios
+
+    params = _params(T1.n_assets)
+    wrong = generate_scenarios(params, T1.n_buckets + 3, seed=1, n_raw=300)
+    with pytest.raises(InstanceGenerationError, match="buckets|shape"):
+        generate(T1, Dials(cvar_risk=True), params, seed=0, scenarios=wrong, n_target=15)

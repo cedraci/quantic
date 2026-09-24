@@ -29,9 +29,10 @@ from quantic.problem.dials import Dials
 from quantic.problem.feasibility import classify
 from quantic.problem.instance import Instance
 from quantic.problem.liquidation import LADDER, TierSpec
-from quantic.problem.objective import evaluate
+from quantic.problem.objective import cvar_of, evaluate, optimal_zeta
 from quantic.problem.params import MarketParams
-from quantic.problem.risk import VarianceRisk
+from quantic.problem.risk import CVaRRisk, VarianceRisk
+from quantic.problem.scenarios import ScenarioSet, generate_scenarios, reduce_scenarios
 from quantic.problem.schedule import Schedule
 
 # Fraction of the witness's non-zero cells carved into indivisible blocks
@@ -41,6 +42,12 @@ _BLOCK_FRACTION = 0.25
 
 _DEFAULT_LOT_SIZE = 100
 _DEFAULT_TICK_SIZE = 0.01
+
+# Tail level for dial D3. 0.95 is the conventional choice and is what the
+# crossover study sweeps around.
+_DEFAULT_ALPHA = 0.95
+_DEFAULT_N_RAW = 2000
+_DEFAULT_N_TARGET = 25
 
 
 class InstanceGenerationError(RuntimeError):
@@ -137,18 +144,52 @@ def _carve_blocks(witness: Schedule, rng: np.random.Generator) -> tuple[Block, .
 def _balanced_lam(instance: Instance) -> float:
     """``lam`` making the risk term equal the cost terms at the witness.
 
-    An arbitrary ``lam`` makes one side of the trade-off vanish -- either risk
-    swamps execution cost or it is invisible -- and a problem where one side
-    is irrelevant is not the problem the crossover study is about. M4 sweeps
-    ``lam`` around this point.
+    An arbitrary ``lam`` makes one side of the trade-off vanish, and a problem
+    where risk or execution cost is irrelevant is not the problem the
+    crossover study is about. Works for both risk specs because it goes
+    through the public ``evaluate``.
     """
-    zero = dataclasses.replace(instance, risk=VarianceRisk(lam=0.0))
-    costs = evaluate(zero, instance.witness).total
-    unit = dataclasses.replace(instance, risk=VarianceRisk(lam=1.0))
-    raw_risk = evaluate(unit, instance.witness).risk_cost
+    zeta = (
+        optimal_zeta(instance, instance.witness)
+        if isinstance(instance.risk, CVaRRisk)
+        else None
+    )
+    zero = dataclasses.replace(
+        instance, risk=dataclasses.replace(instance.risk, lam=0.0)
+    )
+    costs = evaluate(zero, instance.witness, zeta=zeta).total
+    unit = dataclasses.replace(
+        instance, risk=dataclasses.replace(instance.risk, lam=1.0)
+    )
+    raw_risk = evaluate(unit, instance.witness, zeta=zeta).risk_cost
     if raw_risk <= 0.0:
         return 0.0
     return costs / raw_risk
+
+
+def _cvar_risk_for(
+    tier: TierSpec,
+    params: MarketParams,
+    seed: int,
+    alpha: float,
+    n_raw: int,
+    n_target: int,
+    scenarios: ScenarioSet | None,
+) -> tuple[CVaRRisk, ScenarioSet]:
+    """Build a CVaRRisk over a reduced set, returning the raw set for diagnostics."""
+    raw = (
+        scenarios
+        if scenarios is not None
+        else generate_scenarios(params, tier.n_buckets, seed=seed, n_raw=n_raw)
+    )
+    if (raw.n_buckets, raw.n_assets) != (tier.n_buckets, tier.n_assets):
+        raise InstanceGenerationError(
+            f"{tier.name}: supplied scenarios have shape (buckets={raw.n_buckets}, "
+            f"assets={raw.n_assets}) but the tier is ({tier.n_buckets}, "
+            f"{tier.n_assets})"
+        )
+    reduced = reduce_scenarios(raw, n_target=n_target)
+    return CVaRRisk(lam=0.0, alpha=alpha, scenarios=reduced), raw
 
 
 def generate(
@@ -158,6 +199,10 @@ def generate(
     *,
     seed: int,
     lam: float | None = None,
+    alpha: float = _DEFAULT_ALPHA,
+    n_raw: int = _DEFAULT_N_RAW,
+    n_target: int = _DEFAULT_N_TARGET,
+    scenarios: ScenarioSet | None = None,
 ) -> Instance:
     """Build one feasible instance for ``tier`` under ``dials``.
 
@@ -209,6 +254,14 @@ def generate(
         for a in params.assets
     )
 
+    raw_scenarios: ScenarioSet | None = None
+    if dials.cvar_risk:
+        risk, raw_scenarios = _cvar_risk_for(
+            tier, params, seed, alpha, n_raw, n_target, scenarios
+        )
+    else:
+        risk = VarianceRisk(lam=0.0)
+
     instance = Instance(
         instance_id=f"{tier.name}-{dials.label}-{seed}",
         tier=tier.name,
@@ -219,13 +272,36 @@ def generate(
         params=params,
         dials=dials,
         constraints=tuple(constraints),
-        risk=VarianceRisk(lam=0.0),
+        risk=risk,
         witness=witness,
         seed=seed,
     )
 
+    if dials.cvar_risk and raw_scenarios is not None:
+        # The reduction error has to be measured at a witness, which only
+        # exists now. It feeds describe() and therefore content_hash, so it
+        # must be attached before lam is chosen and the instance is final.
+        reduced = instance.risk.scenarios
+        cvar_raw = cvar_of(raw_scenarios, instance, instance.witness, alpha=alpha)
+        cvar_reduced = cvar_of(reduced, instance, instance.witness, alpha=alpha)
+        report = dataclasses.replace(
+            reduced.reduction,
+            cvar_raw=cvar_raw,
+            cvar_reduced=cvar_reduced,
+            cvar_discrepancy=cvar_reduced - cvar_raw,
+        )
+        instance = dataclasses.replace(
+            instance,
+            risk=dataclasses.replace(
+                instance.risk,
+                scenarios=dataclasses.replace(reduced, reduction=report),
+            ),
+        )
+
     chosen_lam = _balanced_lam(instance) if lam is None else lam
-    instance = dataclasses.replace(instance, risk=VarianceRisk(lam=chosen_lam))
+    instance = dataclasses.replace(
+        instance, risk=dataclasses.replace(instance.risk, lam=chosen_lam)
+    )
 
     report = classify(instance, witness)
     if not report.feasible:
