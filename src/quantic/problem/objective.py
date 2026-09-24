@@ -27,6 +27,7 @@ from quantic.micro.impact.almgren_chriss import AlmgrenChriss
 from quantic.micro.impact.base import ImpactModel
 from quantic.micro.impact.sqrt_law import PowerLawImpact
 from quantic.problem.instance import Instance
+from quantic.problem.risk import VarianceRisk
 from quantic.problem.schedule import Schedule
 
 _BPS = 10_000.0
@@ -141,13 +142,16 @@ def _risk_cost(instance: Instance, holdings_shares: np.ndarray) -> float:
     The bucket horizon is already inside the covariance, so spec section 5.2's
     ``tau`` does not appear.
     """
-    lam = getattr(instance.risk, "lam", None)
-    if lam is None:
+    # Dispatch on type, never on the presence of an attribute. CVaRRisk also
+    # carries a `lam`, so an attribute probe would score it as variance --
+    # silently, and with an entirely plausible number.
+    if not isinstance(instance.risk, VarianceRisk):
         raise NotImplementedError(
             f"objective.evaluate does not know how to score risk spec "
-            f"{instance.risk.name!r}. M2a implements VarianceRisk; CVaRRisk arrives "
-            "with M2b"
+            f"{instance.risk.name!r} ({type(instance.risk).__name__}). "
+            "VarianceRisk is handled here; CVaRRisk is handled by _cvar_cost"
         )
+    lam = instance.risk.lam
     if lam == 0.0:
         return 0.0
     sigma_price = instance.params.price_covariance()
