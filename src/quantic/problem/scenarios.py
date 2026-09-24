@@ -23,6 +23,7 @@ from typing import Any
 import numpy as np
 
 from quantic.problem.instance import Instance
+from quantic.problem.params import MarketParams
 from quantic.problem.schedule import Schedule
 
 # Weights come from summing float probabilities, so exact equality with 1.0 is
@@ -157,3 +158,45 @@ class ScenarioSet:
                 weights.tobytes(),
             )
         )
+
+
+def generate_scenarios(
+    params: MarketParams,
+    n_buckets: int,
+    *,
+    seed: int,
+    n_raw: int = 2000,
+) -> ScenarioSet:
+    """Draw ``n_raw`` price paths from ``params.covariance``.
+
+    Shocks are independent across buckets, which is what makes ``Var(L_s)``
+    equal the variance term's quadratic form.
+
+    ``params.covariance`` is already at the bucket horizon, so nothing is
+    rescaled here.
+
+    Sampling goes through an explicit eigendecomposition rather than
+    ``Generator.multivariate_normal``: the covariance passes a *relative* PSD
+    check, so a tiny negative eigenvalue from rounding is legitimate, and
+    ``multivariate_normal`` would emit a RuntimeWarning for it. Clipping those
+    to zero here is deterministic, warning-free, and says exactly what is
+    being tolerated.
+    """
+    if n_raw < 1:
+        raise ValueError(f"n_raw must be positive, got {n_raw}")
+    if n_buckets < 1:
+        raise ValueError(f"n_buckets must be positive, got {n_buckets}")
+
+    covariance = np.asarray(params.covariance, dtype=float)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    # Rounding-scale negatives only; MarketParams already rejected a
+    # genuinely non-PSD covariance at construction.
+    factor = eigenvectors * np.sqrt(np.clip(eigenvalues, 0.0, None))
+
+    rng = np.random.default_rng([seed, n_raw, n_buckets, params.n_assets])
+    standard = rng.standard_normal((n_raw, n_buckets, params.n_assets))
+    returns = standard @ factor.T
+
+    return ScenarioSet(
+        returns=returns, weights=np.full(n_raw, 1.0 / n_raw), seed=seed
+    )

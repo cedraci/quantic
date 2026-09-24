@@ -9,7 +9,7 @@ from quantic.problem.dials import Dials
 from quantic.problem.instance import Instance
 from quantic.problem.params import AssetParams, MarketParams
 from quantic.problem.risk import VarianceRisk
-from quantic.problem.scenarios import ReductionReport, ScenarioSet
+from quantic.problem.scenarios import ReductionReport, ScenarioSet, generate_scenarios
 from quantic.problem.schedule import Schedule
 
 BUCKET_NS = 1800 * 1_000_000_000
@@ -182,3 +182,89 @@ def test_reduction_report_rejects_a_reduction_that_does_not_reduce():
 def test_reduction_report_rejects_a_negative_distance():
     with pytest.raises(ValueError, match="wasserstein"):
         ReductionReport(n_raw=10, n_reduced=4, wasserstein=-1.0)
+
+
+def _params(n: int, scale: float = 1e-4) -> MarketParams:
+    rng = np.random.default_rng(3)
+    a = rng.normal(size=(n, n))
+    return MarketParams(
+        assets=tuple(
+            AssetParams(f"S{i}", 0.5, 0.8, 0.1, 0.005, 400_000.0, 100.0, 0.01)
+            for i in range(n)
+        ),
+        covariance=(a @ a.T) / n * scale,
+        bucket_ns=BUCKET_NS,
+    )
+
+
+def test_generated_scenarios_have_the_requested_shape():
+    ss = generate_scenarios(_params(3), n_buckets=4, seed=1, n_raw=500)
+    assert (ss.n_scenarios, ss.n_buckets, ss.n_assets) == (500, 4, 3)
+
+
+def test_generated_weights_are_uniform_and_sum_to_one():
+    ss = generate_scenarios(_params(2), n_buckets=3, seed=1, n_raw=250)
+    assert np.allclose(ss.weights, 1 / 250)
+    assert ss.weights.sum() == pytest.approx(1.0)
+
+
+def test_an_unreduced_set_carries_no_reduction_report():
+    assert generate_scenarios(_params(2), n_buckets=2, seed=1, n_raw=50).reduction is None
+
+
+def test_the_sample_covariance_matches_the_parameter_covariance():
+    """The scenario machinery must describe the same risk the variance term does.
+
+    params.covariance is already at the bucket horizon, so generation must not
+    rescale it -- a second rescale is exactly the class of silent error the
+    units discipline exists to prevent.
+    """
+    params = _params(3)
+    ss = generate_scenarios(params, n_buckets=4, seed=5, n_raw=40_000)
+    flat = ss.returns.reshape(-1, 3)
+    empirical = np.cov(flat, rowvar=False)
+    assert np.allclose(empirical, params.covariance, rtol=0.10, atol=1e-8)
+
+
+def test_shocks_are_independent_across_buckets():
+    """Independence across buckets is what makes Var(L) equal the variance term."""
+    ss = generate_scenarios(_params(2), n_buckets=2, seed=9, n_raw=40_000)
+    first = ss.returns[:, 0, 0]
+    second = ss.returns[:, 1, 0]
+    assert abs(float(np.corrcoef(first, second)[0, 1])) < 0.05
+
+
+def test_generation_is_deterministic_in_its_seed():
+    a = generate_scenarios(_params(2), n_buckets=3, seed=7, n_raw=100)
+    b = generate_scenarios(_params(2), n_buckets=3, seed=7, n_raw=100)
+    assert a == b
+
+
+def test_a_different_seed_gives_different_scenarios():
+    a = generate_scenarios(_params(2), n_buckets=3, seed=7, n_raw=100)
+    b = generate_scenarios(_params(2), n_buckets=3, seed=8, n_raw=100)
+    assert a != b
+
+
+def test_the_seed_is_recorded_on_the_set():
+    assert generate_scenarios(_params(2), n_buckets=2, seed=11, n_raw=10).seed == 11
+
+
+def test_generation_emits_no_warnings():
+    """Test output must be pristine; a PSD-boundary covariance must not warn."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        generate_scenarios(_params(3), n_buckets=3, seed=1, n_raw=200)
+
+
+@pytest.mark.parametrize("bad,match", [(0, "n_raw"), (-5, "n_raw")])
+def test_a_non_positive_scenario_count_is_rejected(bad, match):
+    with pytest.raises(ValueError, match=match):
+        generate_scenarios(_params(2), n_buckets=2, seed=1, n_raw=bad)
+
+
+def test_a_non_positive_bucket_count_is_rejected():
+    with pytest.raises(ValueError, match="n_buckets"):
+        generate_scenarios(_params(2), n_buckets=0, seed=1, n_raw=10)
