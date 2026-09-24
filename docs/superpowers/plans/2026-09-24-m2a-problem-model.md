@@ -3917,7 +3917,7 @@ generated grids instead.
 """
 
 import numpy as np
-from hypothesis import assume, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from quantic.problem.constraints.block_trades import Block, BlockTrades
@@ -3937,13 +3937,21 @@ MAX_LOTS = 6
 
 
 @st.composite
-def grids(draw, n_assets=None, n_buckets=None):
-    """An arbitrary non-negative lot grid."""
+def grids(draw, n_assets=None, n_buckets=None, max_value=MAX_LOTS):
+    """An arbitrary non-negative lot grid, every cell drawn from ``0..max_value``.
+
+    ``max_value`` exists so the instance-based properties below can generate
+    grids already inside a tier's per-bucket ceiling. Filtering afterwards with
+    ``assume`` would be catastrophic at T0: the grid is 3x4 and the ceiling is
+    3, so only ``(4/7)**12 = 0.12%`` of draws survive and Hypothesis's
+    ``filter_too_much`` health check fires every run, deterministically.
+    Generating in range is faster and samples the space that actually matters.
+    """
     rows = n_assets if n_assets is not None else draw(st.integers(1, 4))
     cols = n_buckets if n_buckets is not None else draw(st.integers(1, 4))
     flat = draw(
         st.lists(
-            st.integers(0, MAX_LOTS), min_size=rows * cols, max_size=rows * cols
+            st.integers(0, max_value), min_size=rows * cols, max_size=rows * cols
         )
     )
     return Schedule(
@@ -4036,10 +4044,10 @@ def test_a_higher_minimum_lot_never_reports_a_smaller_violation(s, a, b):
 
 
 @settings(max_examples=50, deadline=None)
-@given(grids(n_assets=T0.n_assets, n_buckets=T0.n_buckets))
+@given(grids(n_assets=T0.n_assets, n_buckets=T0.n_buckets,
+             max_value=T0.max_lots_per_bucket))
 def test_the_breakdown_always_sums_to_the_total(s):
     inst = generate(T0, Dials(concave_impact=True), _params(T0.n_assets), seed=0)
-    assume(s.as_array().max() <= inst.max_lots_per_bucket)
     b = evaluate(inst, s)
     assert b.total == float(
         b.spread_cost + b.temporary_impact_cost + b.permanent_impact_cost + b.risk_cost
@@ -4047,11 +4055,11 @@ def test_the_breakdown_always_sums_to_the_total(s):
 
 
 @settings(max_examples=50, deadline=None)
-@given(grids(n_assets=T0.n_assets, n_buckets=T0.n_buckets))
+@given(grids(n_assets=T0.n_assets, n_buckets=T0.n_buckets,
+             max_value=T0.max_lots_per_bucket))
 def test_every_objective_term_is_finite_and_non_negative_for_any_schedule(s):
     """M3 scores infeasible schedules while calibrating penalties; none may be NaN."""
     inst = generate(T0, Dials(concave_impact=True), _params(T0.n_assets), seed=0)
-    assume(s.as_array().max() <= inst.max_lots_per_bucket)
     b = evaluate(inst, s)
     for value in (
         b.spread_cost, b.temporary_impact_cost, b.permanent_impact_cost, b.risk_cost
@@ -4060,10 +4068,10 @@ def test_every_objective_term_is_finite_and_non_negative_for_any_schedule(s):
 
 
 @settings(max_examples=50, deadline=None)
-@given(grids(n_assets=T0.n_assets, n_buckets=T0.n_buckets))
+@given(grids(n_assets=T0.n_assets, n_buckets=T0.n_buckets,
+             max_value=T0.max_lots_per_bucket))
 def test_the_total_violation_always_equals_the_sum_of_its_parts(s):
     inst = generate(T0, Dials(discrete_participation=True), _params(T0.n_assets), seed=0)
-    assume(s.as_array().max() <= inst.max_lots_per_bucket)
     report = classify(inst, s)
     assert report.total_violation == float(sum(report.violations.values()))
     assert report.feasible == (report.total_violation == 0.0)
