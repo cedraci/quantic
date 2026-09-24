@@ -69,3 +69,33 @@ def test_crossed_book_is_rejected():
         )
         _ = b.mid
     assert "crossed" in str(exc.value)
+
+
+def test_aggressor_is_a_distinct_type_from_resting_side():
+    """`Side` means the resting order's side; `Aggressor` means who crossed.
+
+    Both spell their members "buy"/"sell" but they mean opposite things about
+    the same trade: a buying aggressor consumes *sell*-side resting liquidity.
+    Before they were separated, `micro.liquidity.signed_order_flow` read
+    `side` as resting while `micro.impact.depth_walk.walk` read the same enum
+    as aggressor, and nothing could catch a caller passing one for the other.
+    """
+    from quantic.core.types import Aggressor, Side
+
+    assert Aggressor.BUY != Side.BUY
+    assert not isinstance(Side.BUY, Aggressor)
+
+
+def test_aggressor_names_the_resting_side_it_consumes():
+    from quantic.core.types import Aggressor, Side
+
+    assert Aggressor.BUY.consumes is Side.SELL
+    assert Aggressor.SELL.consumes is Side.BUY
+
+
+def test_aggressor_can_be_derived_from_the_resting_side_that_traded():
+    """An execution resting on the sell side means a buyer lifted the offer."""
+    from quantic.core.types import Aggressor, Side
+
+    assert Aggressor.from_resting_side(Side.SELL) is Aggressor.BUY
+    assert Aggressor.from_resting_side(Side.BUY) is Aggressor.SELL

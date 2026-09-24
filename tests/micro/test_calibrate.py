@@ -78,7 +78,9 @@ def test_recovers_ground_truth_delta_and_y_in_low_noise(low_noise_bundle):
     )
 
     for symbol in LOW_NOISE.symbols:
-        result = fit_power_law(obs.filter(pl.col("symbol") == symbol), sigma=sigma)
+        result = fit_power_law(
+            obs.filter(pl.col("symbol") == symbol), sigma=sigma, bucket_ns=BUCKET_NS
+        )
         assert result.delta == pytest.approx(gt["impact_delta"][symbol], abs=0.05)
         assert result.y_coef == pytest.approx(gt["impact_Y"][symbol], rel=0.30)
         assert result.r_squared > 0.90
@@ -137,10 +139,19 @@ def test_to_model_round_trips_into_a_usable_impact_model(low_noise_bundle):
     obs = observations_from_buckets(
         low_noise_bundle.l1(), low_noise_bundle.l3(), session=SESSION, bucket_ns=BUCKET_NS
     )
-    model = fit_power_law(
-        obs.filter(pl.col("symbol") == "SYNA"), sigma=gt["sigma_bucket"]
-    ).to_model()
-    p = ImpactParams(symbol="SYNA", sigma=gt["sigma_bucket"], bucket_volume=4e5, price=1000.0)
+    result = fit_power_law(
+        obs.filter(pl.col("symbol") == "SYNA"), sigma=gt["sigma_bucket"], bucket_ns=BUCKET_NS
+    )
+    # The fit is on net order-flow imbalance, so reinterpreting it as own
+    # participation is an assumption that has to be stated (finding 2.2c).
+    model = result.to_model(assume_own_participation=True)
+    p = ImpactParams(
+        symbol="SYNA",
+        sigma_bucket=gt["sigma_bucket"],
+        bucket_ns=BUCKET_NS,
+        bucket_volume_shares=4e5,
+        price=1000.0,
+    )
     assert model.price_impact(4e4, p) > 0
 
 
@@ -157,7 +168,7 @@ def test_too_few_bins_is_rejected():
         }
     )
     with pytest.raises(CalibrationError, match="bins"):
-        fit_power_law(obs, sigma=0.005, n_bins=20)
+        fit_power_law(obs, sigma=0.005, bucket_ns=BUCKET_NS, n_bins=20)
 
 
 def _dense_nyse_quotes(days, *, bucket_ns, jump):

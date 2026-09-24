@@ -3,7 +3,10 @@ import pytest
 from quantic.micro.impact.almgren_chriss import AlmgrenChriss
 from quantic.micro.impact.base import ImpactParams, cost_in_bps, currency_cost
 
-P = ImpactParams(symbol="SYNA", sigma=0.005, bucket_volume=400_000.0, price=100.0)
+P = ImpactParams(
+    symbol="SYNA", sigma_bucket=0.005, bucket_ns=1800 * 1_000_000_000,
+    bucket_volume_shares=400_000.0, price=100.0,
+)
 
 
 def test_zero_quantity_has_zero_impact_and_cost():
@@ -53,5 +56,8 @@ def test_model_satisfies_the_protocol():
 
 
 def test_negative_bucket_volume_is_rejected():
-    with pytest.raises(ValueError, match="bucket_volume"):
-        ImpactParams(symbol="SYNA", sigma=0.005, bucket_volume=0.0, price=100.0)
+    with pytest.raises(ValueError, match="bucket_volume_shares"):
+        ImpactParams(
+            symbol="SYNA", sigma_bucket=0.005, bucket_ns=1800 * 1_000_000_000,
+            bucket_volume_shares=0.0, price=100.0,
+        )

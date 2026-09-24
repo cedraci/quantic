@@ -14,10 +14,10 @@ class AlmgrenChriss:
     name: str = field(default="almgren_chriss")
 
     def price_impact(self, q: float, p: ImpactParams) -> float:
-        return self.eta * p.sigma * (abs(q) / p.bucket_volume)
+        return self.eta * p.sigma_bucket * p.participation(q)
 
     def temporary_cost(self, q: float, p: ImpactParams) -> float:
         return self.price_impact(q, p) / 2.0
 
     def permanent_impact(self, q: float, p: ImpactParams) -> float:
-        return self.gamma * p.sigma * (abs(q) / p.bucket_volume)
+        return self.gamma * p.sigma_bucket * p.participation(q)

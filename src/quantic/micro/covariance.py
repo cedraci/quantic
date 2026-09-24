@@ -17,10 +17,38 @@ class InsufficientHistoryError(ValueError):
 
 @dataclass(frozen=True)
 class CovarianceEstimate:
+    """A covariance matrix that knows what horizon it is stated over.
+
+    ``horizon_days`` is the number of trading days the ``matrix`` covers: 252
+    for the annualised default, 1 for daily. It exists because the matrix was
+    previously annualised silently while :class:`ImpactParams` carried a
+    per-bucket sigma, so an M2 risk term combining them would have been wrong
+    by ~sqrt(3276) and entirely plausible.
+    """
+
     symbols: tuple[str, ...]
     matrix: np.ndarray
     n_observations: int
     shrinkage: float
+    horizon_days: float = 252.0
+
+    def at_horizon(self, *, days: float) -> CovarianceEstimate:
+        """The same estimate restated over ``days`` trading days.
+
+        Covariance is linear in time, so this scales the matrix by the ratio
+        of horizons -- unlike a volatility, which goes as the square root.
+        Mixing those two up is precisely the failure this method exists to
+        prevent, so neither is ever done at a call site.
+        """
+        if days <= 0:
+            raise ValueError(f"days must be positive, got {days}")
+        from dataclasses import replace
+
+        return replace(
+            self,
+            matrix=self.matrix * (days / self.horizon_days),
+            horizon_days=float(days),
+        )
 
     def to_frame(self) -> pl.DataFrame:
         data = {"symbol": list(self.symbols)}
@@ -86,4 +114,5 @@ def estimate_covariance(
         matrix=cov * trading_days,
         n_observations=values.shape[0],
         shrinkage=shrinkage,
+        horizon_days=float(trading_days),
     )

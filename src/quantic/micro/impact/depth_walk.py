@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import polars as pl
 
-from quantic.core.types import BookSnapshot, EmptyBookError, Side
+from quantic.core.types import Aggressor, BookSnapshot, EmptyBookError
 
 
 class InsufficientDepthError(ValueError):
@@ -28,8 +28,21 @@ class WalkResult:
     fractional_cost: float
 
 
-def walk(book: BookSnapshot, side: Side, shares: int) -> WalkResult:
-    """Cost of executing ``shares`` immediately against the resting book."""
+def walk(book: BookSnapshot, aggressor: Aggressor, shares: int) -> WalkResult:
+    """Cost of ``aggressor`` executing ``shares`` immediately against the resting book.
+
+    ``aggressor`` is the side *crossing the spread*, not the resting side:
+    :attr:`Aggressor.BUY` consumes asks. Typed as :class:`Aggressor` rather
+    than :class:`Side` precisely because those two are opposite for the same
+    trade, and the inversion is invisible in the result.
+    """
+    if not isinstance(aggressor, Aggressor):
+        raise TypeError(
+            f"walk() takes an Aggressor, got {type(aggressor).__name__}: {aggressor!r}. "
+            "A resting Side is the opposite of the Aggressor that traded against it "
+            "(Aggressor.from_resting_side converts), so accepting one for the other "
+            "would silently invert the sign of the cost"
+        )
     if shares <= 0:
         raise ValueError(f"shares must be positive, got {shares}")
 
@@ -37,12 +50,13 @@ def walk(book: BookSnapshot, side: Side, shares: int) -> WalkResult:
     if mid is None:
         raise EmptyBookError(f"one-sided book for {book.symbol} at ts_ns={book.ts_ns}")
 
-    levels = book.asks if side is Side.BUY else book.bids
+    levels = book.asks if aggressor is Aggressor.BUY else book.bids
     available = sum(lvl.size for lvl in levels)
     if available < shares:
         raise InsufficientDepthError(
             f"{book.symbol}: requested {shares} shares but only {available} visible "
-            f"on the {side.value} side at ts_ns={book.ts_ns}"
+            f"on the {aggressor.consumes.value} side at ts_ns={book.ts_ns} "
+            f"(aggressor={aggressor.value})"
         )
 
     remaining = shares
@@ -57,7 +71,9 @@ def walk(book: BookSnapshot, side: Side, shares: int) -> WalkResult:
         consumed += 1
 
     avg_price = notional / shares
-    fractional_cost = (avg_price - mid) / mid if side is Side.BUY else (mid - avg_price) / mid
+    fractional_cost = (
+        (avg_price - mid) / mid if aggressor is Aggressor.BUY else (mid - avg_price) / mid
+    )
     return WalkResult(
         shares=shares,
         avg_price=avg_price,
@@ -68,17 +84,22 @@ def walk(book: BookSnapshot, side: Side, shares: int) -> WalkResult:
 
 
 def empirical_impact_curve(
-    book: BookSnapshot, side: Side, quantities: Sequence[int]
+    book: BookSnapshot, aggressor: Aggressor, quantities: Sequence[int]
 ) -> pl.DataFrame:
     """Cost curve over ``quantities``; sizes exceeding visible depth are skipped."""
-    levels = book.asks if side is Side.BUY else book.bids
+    if not isinstance(aggressor, Aggressor):
+        raise TypeError(
+            f"empirical_impact_curve() takes an Aggressor, got "
+            f"{type(aggressor).__name__}: {aggressor!r}"
+        )
+    levels = book.asks if aggressor is Aggressor.BUY else book.bids
     available = sum(lvl.size for lvl in levels)
 
     rows = []
     for q in quantities:
         if q <= 0 or q > available:
             continue
-        result = walk(book, side, q)
+        result = walk(book, aggressor, q)
         rows.append(
             {
                 "shares": q,

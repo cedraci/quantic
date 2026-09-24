@@ -6,7 +6,10 @@ from quantic.micro.impact.almgren_chriss import AlmgrenChriss
 from quantic.micro.impact.base import ImpactParams
 from quantic.micro.impact.sqrt_law import PowerLawImpact, sqrt_law
 
-P = ImpactParams(symbol="SYNA", sigma=0.005, bucket_volume=400_000.0, price=100.0)
+P = ImpactParams(
+    symbol="SYNA", sigma_bucket=0.005, bucket_ns=1800 * 1_000_000_000,
+    bucket_volume_shares=400_000.0, price=100.0,
+)
 
 
 def test_sqrt_law_matches_the_closed_form():

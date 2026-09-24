@@ -27,13 +27,13 @@ class PowerLawImpact:
             raise ValueError(f"y_coef must be non-negative, got {self.y_coef}")
 
     def price_impact(self, q: float, p: ImpactParams) -> float:
-        return self.y_coef * p.sigma * (abs(q) / p.bucket_volume) ** self.delta
+        return self.y_coef * p.sigma_bucket * p.participation(q) ** self.delta
 
     def temporary_cost(self, q: float, p: ImpactParams) -> float:
         return self.price_impact(q, p) / (self.delta + 1.0)
 
     def permanent_impact(self, q: float, p: ImpactParams) -> float:
-        return self.gamma * p.sigma * (abs(q) / p.bucket_volume)
+        return self.gamma * p.sigma_bucket * p.participation(q)
 
 
 def sqrt_law(y_coef: float, gamma: float = 0.0) -> PowerLawImpact:

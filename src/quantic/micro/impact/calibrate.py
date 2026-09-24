@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 
 import numpy as np
 import polars as pl
@@ -34,16 +35,76 @@ class CalibrationError(ValueError):
     """Raised when there is not enough signal to fit an impact law."""
 
 
+class ParticipationBasis(StrEnum):
+    """Which participation variable a power law was regressed on.
+
+    ``NET_IMBALANCE`` is what L3 data can actually observe: ``signed_flow /
+    volume``, the market's *aggregate* net order-flow imbalance in
+    ``[-1, 1]``. Nothing in a public message stream isolates one
+    participant's orders, so this is the only regressor available from real
+    data.
+
+    ``OWN_PARTICIPATION`` is what M2's objective evaluates: ``x[i,t] / V_i``,
+    our own one-sided share of bucket volume in ``[0, 1]``.
+
+    They are not the same variable, and a ``Y`` fitted on one is not a ``Y``
+    for the other without an assumption. Carrying the basis on the result --
+    and refusing to build a model across it silently -- is what keeps that
+    assumption visible instead of buried.
+    """
+
+    NET_IMBALANCE = "net_imbalance"
+    OWN_PARTICIPATION = "own_participation"
+
+
 @dataclass(frozen=True)
 class CalibrationResult:
+    """A fitted power law, with everything needed to interpret it.
+
+    ``sigma`` and ``bucket_ns`` are recorded because ``y_coef`` is only
+    meaningful relative to the volatility it was divided by and the bucket
+    that volatility was measured over.
+    """
+
     symbol: str
     delta: float
     y_coef: float
     r_squared: float
     n_observations: int
     n_bins: int
+    sigma: float
+    bucket_ns: int
+    basis: ParticipationBasis
 
-    def to_model(self, gamma: float = 0.0) -> PowerLawImpact:
+    def to_model(
+        self,
+        gamma: float = 0.0,
+        *,
+        assume_own_participation: bool = False,
+    ) -> PowerLawImpact:
+        """Build an impact model M2 can evaluate on its own decision variables.
+
+        Refuses by default when the fit was made on net order-flow imbalance,
+        because :class:`PowerLawImpact` is evaluated on
+        :meth:`ImpactParams.participation` -- our own one-sided share of
+        bucket volume. Reusing an imbalance-fitted ``Y`` there is the standard
+        identification assumption in this literature (the impact of net signed
+        volume does not depend on whose order supplied it), and it may well be
+        right, but it is an assumption and the call site should say so.
+        """
+        if (
+            self.basis is not ParticipationBasis.OWN_PARTICIPATION
+            and not assume_own_participation
+        ):
+            raise CalibrationError(
+                f"{self.symbol}: y_coef={self.y_coef:.4f} was fitted on "
+                f"{self.basis.value} (aggregate signed order-flow imbalance in "
+                "[-1, 1]), but PowerLawImpact is evaluated on own participation "
+                "|q|/V in [0, 1]. Treating one as the other is an identification "
+                "assumption -- that impact depends on net signed volume and not on "
+                "whose order supplied it. Pass assume_own_participation=True to "
+                "adopt it deliberately"
+            )
         return PowerLawImpact(delta=self.delta, y_coef=self.y_coef, gamma=gamma)
 
 
@@ -152,6 +213,7 @@ def fit_power_law(
     observations: pl.DataFrame,
     *,
     sigma: float,
+    bucket_ns: int,
     n_bins: int = DEFAULT_N_BINS,
     min_participation: float = 1e-4,
 ) -> CalibrationResult:
@@ -207,6 +269,9 @@ def fit_power_law(
         r_squared=r_squared,
         n_observations=usable.height,
         n_bins=len(x_vals),
+        sigma=sigma,
+        bucket_ns=bucket_ns,
+        basis=ParticipationBasis.NET_IMBALANCE,
     )
 
 
@@ -260,6 +325,7 @@ def calibrate_bundle(
         results[symbol] = fit_power_law(
             observations.filter(pl.col("symbol") == symbol),
             sigma=sigmas[symbol],
+            bucket_ns=bucket_ns,
             n_bins=n_bins,
         )
     return results

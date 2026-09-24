@@ -3,16 +3,62 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum, StrEnum
 
 
 class Side(StrEnum):
+    """The side a **resting** order sits on.
+
+    This is the meaning carried by the ``side`` column of ``l2_depth`` and
+    ``l3_messages``, and by ``micro.liquidity.signed_order_flow``: an
+    execution with ``side == SELL`` was a resting sell order that someone
+    lifted. It is *not* the side of the participant who crossed the spread --
+    that is :class:`Aggressor`.
+    """
+
     BUY = "buy"
     SELL = "sell"
 
     @property
     def opposite(self) -> Side:
         return Side.SELL if self is Side.BUY else Side.BUY
+
+
+class Aggressor(Enum):
+    """The side of the participant **crossing** the spread.
+
+    Deliberately a separate type from :class:`Side` even though both spell
+    their members ``"buy"``/``"sell"``, because for one and the same trade
+    they take opposite values: a buying aggressor consumes sell-side resting
+    liquidity. The two meanings previously shared :class:`Side` -- resting in
+    the data layer and in ``signed_order_flow``, aggressor in
+    ``impact.depth_walk.walk`` -- so a caller passing one where the other was
+    expected produced a plausible, silently inverted answer.
+
+    M2's liquidation problem is written entirely in aggressor terms (we are
+    the seller crossing the spread), so this is the type that crosses the
+    M1/M2 boundary.
+
+    A plain :class:`enum.Enum`, not a :class:`enum.StrEnum`, unlike
+    :class:`Side`. ``StrEnum`` members compare equal to any string of the same
+    value, so ``Aggressor.BUY == Side.BUY`` would be ``True`` and separating
+    the two types would buy nothing. ``Side`` stays a ``StrEnum`` because it
+    is a stored value -- it is literally the ``side`` column of
+    ``l2_depth`` and ``l3_messages``. ``Aggressor`` never appears in storage.
+    """
+
+    BUY = "buy"
+    SELL = "sell"
+
+    @property
+    def consumes(self) -> Side:
+        """The resting side this aggressor trades against."""
+        return Side.SELL if self is Aggressor.BUY else Side.BUY
+
+    @classmethod
+    def from_resting_side(cls, side: Side) -> Aggressor:
+        """Infer the aggressor from the resting side that was executed."""
+        return cls.BUY if side is Side.SELL else cls.SELL
 
 
 class EmptyBookError(ValueError):
