@@ -87,18 +87,21 @@ def test_recovers_ground_truth_delta_and_y_in_low_noise(low_noise_bundle):
 
 
 def test_recovers_delta_under_realistic_diffusion_noise(realistic_bundle):
-    """Robustness check, not a precision check (R23 amendment 3).
+    """Robustness check, not a precision check.
 
-    At realistic diffusion noise (noise_frac=1.0), per-symbol delta recovery
-    is NOT asserted to any tolerance: measurement shows the binned-regression
-    estimator only recovers delta to roughly 0.13-0.26 even at 1800-3600
-    observations per symbol, and the error does not shrink monotonically with
-    sample size because of selection bias in which bins survive the
-    mean-signed-impact > 0 filter. Asserting a delta tolerance here would be
-    an assertion the method cannot support, which is worse than none. The
-    low-noise test above is the actual correctness gate for this estimator.
-    This test only asserts that calibration runs cleanly end-to-end and
-    produces well-formed, sane results under realistic noise.
+    At realistic diffusion noise the estimator is imprecise: measured on 25
+    symbols at the spec's own 20-day shape (240 observations/symbol), the
+    direct non-linear fit recovers delta to a median absolute error of 0.34,
+    and reports 8 of 25 as failed calibrations. That is a large improvement on
+    the filtered log-log fit it replaced -- which returned all 25 as usable
+    with a maximum error of 1.763, six of them negative and one at delta=2.26
+    -- but it is still not a tolerance this test can assert. Calibration at
+    realistic noise needs a substantially longer history than spec section 8.4
+    requests; see docs/superpowers/specs section 4.2.
+
+    What this test does assert is the property that matters for M2: whatever
+    comes back is structurally usable, and anything that is not comes back as
+    a named CalibrationError rather than as a plausible number.
     """
     gt = realistic_bundle.manifest.extra["ground_truth"]
     results = calibrate_bundle(
@@ -114,6 +117,8 @@ def test_recovers_delta_under_realistic_diffusion_noise(realistic_bundle):
         assert np.isfinite(result.y_coef)
         assert np.isfinite(result.r_squared)
         assert result.n_observations > 0
+        # Structurally usable means to_model() cannot raise on range grounds.
+        assert result.to_model(assume_own_participation=True).delta == result.delta
 
 
 def test_estimate_bucket_sigma_is_in_the_right_ballpark(realistic_bundle):

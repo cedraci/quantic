@@ -1,9 +1,27 @@
 """Calibrate the power-law impact exponent from bucket-level order flow.
 
-Binned log-log regression (Almgren et al.; Toth et al.): per-bucket impact is
-dominated by diffusion, so observations are grouped into equal-count bins by
-absolute participation and the *signed* impact is averaged within each bin,
-which cancels the noise. Averaging absolute impact instead would bias Y upward.
+Per-bucket impact is dominated by diffusion, so observations are grouped into
+equal-count bins by absolute participation and the *signed* impact is averaged
+within each bin, which cancels the noise (Almgren et al.; Toth et al.).
+Averaging absolute impact instead would bias Y upward.
+
+The bin means are then fitted **directly** by non-linear least squares:
+
+    mean_impact / sigma = Y * f ** delta
+
+rather than by regressing ``log(mean_impact / sigma)`` on ``log f``. The
+logarithm is why the previous estimator had to discard every bin whose mean
+signed impact was non-positive, and discarding on the sign of the outcome
+variable is selection on the outcome variable: surviving bins are biased
+upward and *which* bins survive is draw-dependent. The measured symptom was
+that delta error did not fall monotonically with sample size -- 4800
+observations per symbol did worse than 3600. Without a logarithm there is no
+positivity requirement, so there is no filter and no selection mechanism.
+
+A fit that lands outside ``PowerLawImpact``'s valid ``(0, 1]``, or that finds
+impact moving against flow, is a *failed* calibration. It is raised here,
+where the evidence is, rather than returned as a well-formed result that
+explodes later in ``to_model()``.
 """
 
 from __future__ import annotations
@@ -14,6 +32,7 @@ from enum import StrEnum
 
 import numpy as np
 import polars as pl
+from scipy.optimize import curve_fit
 
 from quantic.core.session import Boundary, TradingSession
 from quantic.data.bundle import DatasetBundle
@@ -23,6 +42,11 @@ from quantic.micro.impact.sqrt_law import PowerLawImpact
 from quantic.micro.liquidity import OutOfSessionError, signed_order_flow
 
 MIN_BINS = 4
+
+# The fit is allowed to wander well outside the physically valid range so that
+# a convex or super-linear result is *observed* and reported, rather than
+# clamped into looking plausible.
+DELTA_FIT_BOUNDS = (0.01, 3.0)
 
 # R23 amendment 2: 6 bins, not 20, is the default for both fit_power_law and
 # calibrate_bundle. Chosen empirically: with more bins each bin holds too few
@@ -209,6 +233,10 @@ def observations_from_buckets(
     )
 
 
+def _power_law(f: np.ndarray, y_coef: float, delta: float) -> np.ndarray:
+    return y_coef * f**delta
+
+
 def fit_power_law(
     observations: pl.DataFrame,
     *,
@@ -217,12 +245,19 @@ def fit_power_law(
     n_bins: int = DEFAULT_N_BINS,
     min_participation: float = 1e-4,
 ) -> CalibrationResult:
+    """Fit ``impact = Y * sigma * |f| ** delta`` to binned bucket observations.
+
+    ``f`` is ``participation`` as produced by
+    :func:`quantic.micro.liquidity.signed_order_flow`, i.e. aggregate net
+    order-flow imbalance -- see :class:`ParticipationBasis`.
+    """
     if sigma <= 0:
         raise CalibrationError(f"sigma must be positive, got {sigma}")
 
     symbols = observations["symbol"].unique().to_list()
     if len(symbols) != 1:
         raise CalibrationError(f"fit one symbol at a time, got {sorted(symbols)}")
+    symbol = symbols[0]
 
     usable = observations.filter(pl.col("participation").abs() >= min_participation)
     if usable.height < n_bins * 2:
@@ -238,37 +273,67 @@ def fit_power_law(
     order = np.argsort(abs_f)
     groups = [g for g in np.array_split(order, n_bins) if g.size > 0]
 
-    x_vals: list[float] = []
-    y_vals: list[float] = []
-    for g in groups:
-        mean_f = float(abs_f[g].mean())
-        mean_impact = float(signed_impact[g].mean())
-        if mean_f <= 0 or mean_impact <= 0:
-            continue  # a bin whose mean impact is negative carries no power-law signal
-        x_vals.append(np.log(mean_f))
-        y_vals.append(np.log(mean_impact / sigma))
+    # Every bin is kept. A bin whose mean signed impact came out negative is a
+    # draw of a noisy quantity, not evidence to be excluded -- excluding it is
+    # what biased the old estimator.
+    x = np.array([abs_f[g].mean() for g in groups], dtype=float)
+    y = np.array([signed_impact[g].mean() for g in groups], dtype=float) / sigma
 
-    if len(x_vals) < MIN_BINS:
+    if len(x) < MIN_BINS:
         raise CalibrationError(
-            f"only {len(x_vals)} usable bins after filtering; need at least {MIN_BINS}"
+            f"{symbol}: only {len(x)} bins available; need at least {MIN_BINS}"
         )
+    if not np.isfinite(x).all() or not np.isfinite(y).all():
+        raise CalibrationError(f"{symbol}: non-finite bin means; cannot fit")
+    if (x <= 0).any():
+        raise CalibrationError(f"{symbol}: a bin has non-positive mean participation")
 
-    x = np.asarray(x_vals)
-    y = np.asarray(y_vals)
-    slope, intercept = np.polyfit(x, y, 1)
+    # Seed from a coarse guess so the optimiser starts somewhere sensible; the
+    # square-root law is the natural prior for delta.
+    y0 = float(np.mean(np.abs(y) / x**0.5)) or 1.0
+    try:
+        (y_coef, delta), _ = curve_fit(
+            _power_law,
+            x,
+            y,
+            p0=(y0, 0.5),
+            bounds=(
+                (-np.inf, DELTA_FIT_BOUNDS[0]),
+                (np.inf, DELTA_FIT_BOUNDS[1]),
+            ),
+            maxfev=20_000,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise CalibrationError(f"{symbol}: impact fit did not converge: {exc}") from exc
 
-    residuals = y - (slope * x + intercept)
-    ss_res = float((residuals**2).sum())
+    predicted = _power_law(x, y_coef, delta)
+    ss_res = float(((y - predicted) ** 2).sum())
     ss_tot = float(((y - y.mean()) ** 2).sum())
     r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
+    if y_coef <= 0:
+        raise CalibrationError(
+            f"{symbol}: fitted y_coef={y_coef:.4f} is not positive, so the data show "
+            "price moving against net order flow over the fitted buckets. This is a "
+            "failed calibration, not a small impact coefficient; it is reported rather "
+            "than clamped to zero"
+        )
+    if not 0.0 < delta <= 1.0:
+        raise CalibrationError(
+            f"{symbol}: fitted delta={delta:.4f} lies outside the valid (0, 1] range "
+            f"that PowerLawImpact accepts (r_squared={r_squared:.4f}, "
+            f"n_observations={usable.height}). A delta above 1 is a convex impact law, "
+            "which the spec's hardness dial D1 does not model. Reported at the fit "
+            "rather than deferred to to_model()"
+        )
+
     return CalibrationResult(
-        symbol=symbols[0],
-        delta=float(slope),
-        y_coef=float(np.exp(intercept)),
+        symbol=symbol,
+        delta=float(delta),
+        y_coef=float(y_coef),
         r_squared=r_squared,
         n_observations=usable.height,
-        n_bins=len(x_vals),
+        n_bins=len(x),
         sigma=sigma,
         bucket_ns=bucket_ns,
         basis=ParticipationBasis.NET_IMBALANCE,
