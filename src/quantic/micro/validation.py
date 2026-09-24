@@ -1,8 +1,22 @@
-"""Cross-validate L3 replay against independently sourced L2 snapshots.
+"""Compare an L3 replay against published L2 snapshots.
 
-Spec section 10.3. L2 and L3 are distinct feed products, so agreement between a
-replayed book and a published snapshot is genuine evidence of correctness
-rather than a tautology.
+Spec section 10.3 frames this as cross-validation against an independent
+source: L2 and L3 are distinct feed products, so agreement between a replayed
+book and a published snapshot is evidence rather than a tautology.
+
+**That framing holds only for real data, and real data has not arrived.** On
+the synthetic bundles this is currently run against, both sides originate in
+the same `data.synth.build_l3_and_l2` call. What the gate demonstrates there
+is that three independently-written order book implementations agree -- the
+generator's `_GeneratorBook`, this comparison, and `micro.book_reconstruct` --
+which is a genuinely strong property and has caught four injected
+reconstructor bugs. But three implementations agreeing about a wrong `replace`
+semantic is three agreements, not three checks, and a shared misconception
+originating in the generator is invisible to all of them.
+
+`tests/micro/test_reconstruction_gate.py::test_l3_l2_holdout_against_real_data`
+is the named holdout that converts this into true cross-validation; it is
+skipped until a bundle with real paired L2 and L3 exists.
 """
 
 from __future__ import annotations

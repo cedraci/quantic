@@ -1,3 +1,5 @@
+import os
+
 import polars as pl
 import pytest
 
@@ -97,3 +99,36 @@ def test_empty_l2_raises_rather_than_reporting_clean(bundle):
 def test_empty_symbols_list_raises(bundle):
     with pytest.raises(ValueError):
         compare_to_l2(bundle.l3(), bundle.l2(), levels=CFG.depth_levels, symbols=[])
+
+
+@pytest.mark.skipif(
+    not os.environ.get("QUANTIC_REAL_BUNDLE"),
+    reason="needs a bundle with real paired L2 and L3; set QUANTIC_REAL_BUNDLE to its path",
+)
+def test_l3_l2_holdout_against_real_data():
+    """The holdout that makes spec 10.3's cross-validation claim true.
+
+    Every other test in this file runs against synthetic data where both the
+    L3 stream and the L2 snapshots come from the same `build_l3_and_l2` call.
+    Three independently-written book implementations agreeing is strong, but
+    it cannot catch a shared misconception about message semantics that
+    originates in the generator -- real feeds vary on in-place size modify,
+    price-unchanged replace, and whether priority is retained on a size
+    decrease.
+
+    This test is the one that reads two genuinely separate feed products. It
+    stays skipped, and named, until such a bundle exists.
+    """
+    from pathlib import Path
+
+    from quantic.data.bundle import DatasetBundle
+
+    bundle = DatasetBundle.load(Path(os.environ["QUANTIC_REAL_BUNDLE"]))
+    bundle.validate()
+    levels = int(os.environ.get("QUANTIC_REAL_BUNDLE_LEVELS", "10"))
+
+    mismatches = compare_to_l2(bundle.l3(), bundle.l2(), levels=levels)
+    assert mismatches == [], (
+        f"{len(mismatches)} disagreement(s) between replayed L3 and published L2 "
+        f"(first: {mismatches[0]})"
+    )
