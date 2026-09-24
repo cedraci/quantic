@@ -328,19 +328,38 @@ def generate_ladder(
     *,
     seed: int,
     include_cvar: bool = False,
+    alpha: float = _DEFAULT_ALPHA,
+    n_raw: int = _DEFAULT_N_RAW,
+    n_target: int = _DEFAULT_N_TARGET,
 ) -> tuple[Instance, ...]:
     """Every tier crossed with every dial combination.
 
-    ``include_cvar=False`` gives M2a's 32 instances. Once M2b lands, flipping
-    it to ``True`` gives all 64 with no other change -- which is the whole
-    point of ``RiskSpec`` being a variant point.
+    ``include_cvar=False`` gives M2a's 32 instances; ``True`` gives all 64.
 
-    ``params_for`` is a callable rather than a single ``MarketParams`` because
-    each tier needs a different asset count, from 3 at T0 to 30 at T3.
+    One raw scenario set is generated per tier and shared by every dial
+    combination in it, so generation runs four times rather than thirty-two.
+    Reduction is deterministic given the same raw set and ``n_target``, so
+    every CVaR instance within a tier sees an identical reduced set.
     """
     out: list[Instance] = []
     for tier in LADDER:
         params = params_for(tier)
+        raw = (
+            generate_scenarios(params, tier.n_buckets, seed=seed, n_raw=n_raw)
+            if include_cvar
+            else None
+        )
         for dials in Dials.combinations(include_cvar=include_cvar):
-            out.append(generate(tier, dials, params, seed=seed))
+            out.append(
+                generate(
+                    tier,
+                    dials,
+                    params,
+                    seed=seed,
+                    alpha=alpha,
+                    n_raw=n_raw,
+                    n_target=n_target,
+                    scenarios=raw if dials.cvar_risk else None,
+                )
+            )
     return tuple(out)
