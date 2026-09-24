@@ -567,6 +567,27 @@ Recorded so a reviewer does not flag them as drift.
    `liquidation.py` here holds the tier ladder rather than a `LiquidationProblem`
    class: with `Instance` frozen and the objective a free function, a problem
    object would hold no state that `Instance` does not already hold.
+5. **`Instance.content_hash` is a computed `@property`, not the stored field
+   §5.8 sketches.** A stored hash would go stale across the two
+   `dataclasses.replace` calls in `generator._balanced_lam`, and a results row
+   pins it, so a stale hash would attribute a published figure to the wrong
+   instance.
+6. **`Instance` omits `slots=True`**, which §5.8 shows, because
+   `dataclasses.replace` is used on it (`generator._balanced_lam`).
+7. **`RiskSpec` gained a `describe()` method beyond §5.5's bare `name: str`**,
+   so `Instance.content_hash` can serialise the risk spec without
+   `dataclasses.asdict`, which would choke on the numpy scenario arrays
+   M2b's `CVaRRisk` will hold.
+8. **`MarketParams` and `Instance` define `__eq__`/`__hash__` explicitly**,
+   departing from the plain frozen-dataclass sketch in §5.5/§5.8. Both embed
+   an ndarray (`covariance`, directly or via `params`), and the
+   dataclass-generated equality compares field tuples, which calls `bool()`
+   on the array's `==` and raises for 2+ elements; the generated hash raises
+   unconditionally since `ndarray` is unhashable. `MarketParams` compares
+   `assets`, `bucket_ns`, and the covariance via `np.array_equal`, hashing on
+   `(assets, bucket_ns, covariance.tobytes(), covariance.shape)`. `Instance`
+   compares and hashes on `content_hash`, which already excludes
+   `instance_id` from the instance's identity.
 
 ## 11. What M2b picks up
 
