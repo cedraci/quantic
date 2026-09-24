@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from collections.abc import Callable
 
 import numpy as np
 
@@ -27,7 +28,7 @@ from quantic.problem.constraints.min_participation import MinParticipation
 from quantic.problem.dials import Dials
 from quantic.problem.feasibility import classify
 from quantic.problem.instance import Instance
-from quantic.problem.liquidation import TierSpec
+from quantic.problem.liquidation import LADDER, TierSpec
 from quantic.problem.objective import evaluate
 from quantic.problem.params import MarketParams
 from quantic.problem.risk import VarianceRisk
@@ -244,3 +245,26 @@ def _dial_code(dials: Dials) -> int:
         | int(dials.cvar_risk) << 2
         | int(dials.block_trades) << 3
     )
+
+
+def generate_ladder(
+    params_for: Callable[[TierSpec], MarketParams],
+    *,
+    seed: int,
+    include_cvar: bool = False,
+) -> tuple[Instance, ...]:
+    """Every tier crossed with every dial combination.
+
+    ``include_cvar=False`` gives M2a's 32 instances. Once M2b lands, flipping
+    it to ``True`` gives all 64 with no other change -- which is the whole
+    point of ``RiskSpec`` being a variant point.
+
+    ``params_for`` is a callable rather than a single ``MarketParams`` because
+    each tier needs a different asset count, from 3 at T0 to 30 at T3.
+    """
+    out: list[Instance] = []
+    for tier in LADDER:
+        params = params_for(tier)
+        for dials in Dials.combinations(include_cvar=include_cvar):
+            out.append(generate(tier, dials, params, seed=seed))
+    return tuple(out)
