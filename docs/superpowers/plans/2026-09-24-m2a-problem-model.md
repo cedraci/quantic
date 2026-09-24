@@ -622,11 +622,34 @@ def test_a_covariance_of_the_wrong_size_is_rejected():
         MarketParams(assets=(_asset("A"),), covariance=np.eye(3) * 1e-5, bucket_ns=BUCKET_NS)
 
 
-def test_a_tiny_negative_eigenvalue_from_rounding_is_tolerated():
-    """Ledoit-Wolf output is PSD up to floating-point noise; reject only real violations."""
+def _with_smallest_eigenvalue(delta: float) -> np.ndarray:
+    """A symmetric 2x2 at 1e-5 scale whose smallest eigenvalue is exactly -delta."""
     cov = np.eye(2) * 1e-5
-    cov[0, 0] -= 1e-20
+    cov[0, 1] = cov[1, 0] = 1e-5 + delta
+    return cov
+
+
+def test_rounding_scale_negative_eigenvalues_are_tolerated():
+    """Ledoit-Wolf output is PSD only up to floating-point noise.
+
+    -1e-16 against a 2e-5 largest eigenvalue is 5e-12 relative, well inside
+    the 1e-10 relative floor.
+    """
+    cov = _with_smallest_eigenvalue(1e-16)
+    assert np.linalg.eigvalsh(cov).min() < 0, "fixture is not actually non-PSD"
     MarketParams(assets=(_asset("A"), _asset("B")), covariance=cov, bucket_ns=BUCKET_NS)
+
+
+def test_a_genuinely_negative_eigenvalue_is_rejected_even_when_small():
+    """The regression that matters.
+
+    -1e-12 against a 2e-5 largest eigenvalue is 5e-8 relative -- four orders
+    of magnitude above rounding noise, and a real direction in which the risk
+    term is unbounded below. An absolute -1e-10 floor would accept it.
+    """
+    cov = _with_smallest_eigenvalue(1e-12)
+    with pytest.raises(ValueError, match="positive semi-definite|PSD"):
+        MarketParams(assets=(_asset("A"), _asset("B")), covariance=cov, bucket_ns=BUCKET_NS)
 
 
 @pytest.mark.parametrize(
@@ -698,8 +721,13 @@ import numpy as np
 from quantic.micro.impact.base import ImpactParams
 
 # Ledoit-Wolf output is PSD up to floating-point noise, so an exactly-zero
-# floor would reject valid estimates. Scaled by the largest eigenvalue so the
-# tolerance means the same thing at any magnitude.
+# floor would reject valid estimates. The floor is scaled by the matrix's own
+# largest eigenvalue, with NO absolute fallback: a bucket-horizon log-return
+# covariance has eigenvalues around 1e-5, so clamping the scale to a minimum
+# of 1.0 would turn this into a fixed -1e-10 floor and admit a genuinely
+# negative eigenvalue five orders of magnitude above the noise. `eigvalsh`
+# rounding noise is about eps*|A| ~ 2.2e-16 relative, so a 1e-10 relative
+# floor still leaves ~450,000x headroom against false rejection.
 _PSD_RTOL = 1e-10
 
 
@@ -785,7 +813,7 @@ class MarketParams:
             raise ValueError("covariance must be symmetric")
 
         eigenvalues = np.linalg.eigvalsh(cov)
-        floor = -_PSD_RTOL * max(float(np.max(np.abs(eigenvalues))), 1.0)
+        floor = -_PSD_RTOL * float(np.max(np.abs(eigenvalues)))
         if float(eigenvalues.min()) < floor:
             raise ValueError(
                 f"covariance is not positive semi-definite (smallest eigenvalue "
