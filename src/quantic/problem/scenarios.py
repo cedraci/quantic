@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+from scipy.spatial.distance import pdist, squareform
 
 from quantic.problem.instance import Instance
 from quantic.problem.params import MarketParams
@@ -199,4 +200,72 @@ def generate_scenarios(
 
     return ScenarioSet(
         returns=returns, weights=np.full(n_raw, 1.0 / n_raw), seed=seed
+    )
+
+
+def reduce_scenarios(raw: ScenarioSet, *, n_target: int = 25) -> ScenarioSet:
+    """Reduce ``raw`` to ``n_target`` weighted representatives.
+
+    Dupacova fast-forward selection: greedily pick the scenario that most
+    reduces
+
+        D(selected) = sum over s of p_s * min over j in selected of ||xi_s - xi_j||
+
+    then assign every raw scenario to its nearest representative and give each
+    representative the total probability assigned to it.
+
+    ``D`` at termination is the Kantorovich (Wasserstein-1) distance between
+    the raw and reduced distributions under that assignment, so the error the
+    spec requires comes out of the algorithm rather than needing a separate
+    optimal-transport solve.
+
+    Representatives are **actual scenarios**, never centroids: CVaR is a tail
+    statistic and an averaged path is smoother than any real one, so centroids
+    would systematically thin the tail being measured.
+    """
+    if raw.reduction is not None:
+        raise ValueError(
+            "this ScenarioSet is already reduced; reducing again would report a "
+            "Wasserstein distance against the reduced set rather than the original"
+        )
+    if n_target < 1:
+        raise ValueError(f"n_target must be positive, got {n_target}")
+    if n_target >= raw.n_scenarios:
+        raise ValueError(
+            f"n_target={n_target} must be below the {raw.n_scenarios} raw scenarios; "
+            "keeping them all reduces nothing"
+        )
+
+    flat = np.asarray(raw.returns, dtype=float).reshape(raw.n_scenarios, -1)
+    distances = squareform(pdist(flat))
+    probabilities = np.asarray(raw.weights, dtype=float)
+
+    selected: list[int] = []
+    nearest = np.full(raw.n_scenarios, np.inf)
+    for _ in range(n_target):
+        # Cost of adding each candidate, vectorised over all candidates at once.
+        costs = probabilities @ np.minimum(nearest[:, None], distances)
+        costs[selected] = np.inf
+        chosen = int(np.argmin(costs))
+        selected.append(chosen)
+        nearest = np.minimum(nearest, distances[:, chosen])
+
+    order = np.array(sorted(selected))
+    assignment = np.argmin(distances[:, order], axis=1)
+    weights = np.zeros(n_target, dtype=float)
+    np.add.at(weights, assignment, probabilities)
+    # Renormalise against accumulated float error so __post_init__'s tolerance
+    # is a check on the algorithm rather than on floating-point addition.
+    weights = weights / weights.sum()
+
+    report = ReductionReport(
+        n_raw=raw.n_scenarios,
+        n_reduced=n_target,
+        wasserstein=float(probabilities @ nearest),
+    )
+    return ScenarioSet(
+        returns=np.asarray(raw.returns, dtype=float)[order],
+        weights=weights,
+        seed=raw.seed,
+        reduction=report,
     )

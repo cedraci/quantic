@@ -9,7 +9,12 @@ from quantic.problem.dials import Dials
 from quantic.problem.instance import Instance
 from quantic.problem.params import AssetParams, MarketParams
 from quantic.problem.risk import VarianceRisk
-from quantic.problem.scenarios import ReductionReport, ScenarioSet, generate_scenarios
+from quantic.problem.scenarios import (
+    ReductionReport,
+    ScenarioSet,
+    generate_scenarios,
+    reduce_scenarios,
+)
 from quantic.problem.schedule import Schedule
 
 BUCKET_NS = 1800 * 1_000_000_000
@@ -268,3 +273,76 @@ def test_a_non_positive_scenario_count_is_rejected(bad, match):
 def test_a_non_positive_bucket_count_is_rejected():
     with pytest.raises(ValueError, match="n_buckets"):
         generate_scenarios(_params(2), n_buckets=0, seed=1, n_raw=10)
+
+
+def test_reduction_keeps_the_requested_number_of_scenarios():
+    raw = generate_scenarios(_params(2), n_buckets=3, seed=1, n_raw=200)
+    assert reduce_scenarios(raw, n_target=10).n_scenarios == 10
+
+
+def test_reduced_weights_are_a_probability_distribution():
+    raw = generate_scenarios(_params(2), n_buckets=3, seed=1, n_raw=200)
+    reduced = reduce_scenarios(raw, n_target=10)
+    assert reduced.weights.sum() == pytest.approx(1.0)
+    assert (reduced.weights >= 0).all()
+
+
+def test_every_representative_is_an_actual_raw_scenario():
+    """Not a centroid. CVaR is a tail statistic and averaging thins the tail.
+
+    A centroid path is smoother than any real path, so a reduced set built
+    from centroids would systematically understate the very quantity CVaR
+    measures.
+    """
+    raw = generate_scenarios(_params(2), n_buckets=3, seed=1, n_raw=200)
+    reduced = reduce_scenarios(raw, n_target=8)
+    for kept in reduced.returns:
+        assert any(np.array_equal(kept, original) for original in raw.returns)
+
+
+def test_the_reduction_report_records_the_counts_and_the_distance():
+    raw = generate_scenarios(_params(2), n_buckets=3, seed=1, n_raw=200)
+    report = reduce_scenarios(raw, n_target=12).reduction
+    assert report is not None
+    assert (report.n_raw, report.n_reduced) == (200, 12)
+    assert report.wasserstein > 0.0
+    assert report.cvar_raw is None      # needs a witness; the generator fills these
+
+
+def test_wasserstein_distance_falls_as_more_scenarios_are_kept():
+    """The reduction error must be a real measurement, not a decoration."""
+    raw = generate_scenarios(_params(2), n_buckets=3, seed=4, n_raw=300)
+    distances = [
+        reduce_scenarios(raw, n_target=n).reduction.wasserstein for n in (5, 15, 40)
+    ]
+    assert distances[0] > distances[1] > distances[2]
+
+
+def test_reduction_is_deterministic():
+    raw = generate_scenarios(_params(2), n_buckets=3, seed=1, n_raw=200)
+    assert reduce_scenarios(raw, n_target=10) == reduce_scenarios(raw, n_target=10)
+
+
+def test_the_seed_is_carried_through_reduction():
+    raw = generate_scenarios(_params(2), n_buckets=3, seed=17, n_raw=100)
+    assert reduce_scenarios(raw, n_target=5).seed == 17
+
+
+def test_reducing_to_at_least_the_original_count_is_rejected():
+    raw = generate_scenarios(_params(2), n_buckets=2, seed=1, n_raw=50)
+    with pytest.raises(ValueError, match="n_target"):
+        reduce_scenarios(raw, n_target=50)
+
+
+def test_a_non_positive_target_is_rejected():
+    raw = generate_scenarios(_params(2), n_buckets=2, seed=1, n_raw=50)
+    with pytest.raises(ValueError, match="n_target"):
+        reduce_scenarios(raw, n_target=0)
+
+
+def test_reducing_an_already_reduced_set_is_rejected():
+    """Reducing twice would report a Wasserstein distance against the wrong base."""
+    raw = generate_scenarios(_params(2), n_buckets=2, seed=1, n_raw=60)
+    once = reduce_scenarios(raw, n_target=20)
+    with pytest.raises(ValueError, match="already reduced"):
+        reduce_scenarios(once, n_target=5)
