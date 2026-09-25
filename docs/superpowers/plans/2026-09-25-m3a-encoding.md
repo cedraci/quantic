@@ -3498,10 +3498,20 @@ def test_the_energy_at_the_witness_equals_the_reference_objective(encoding):
 
 
 @pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
-def test_the_penalty_block_is_exactly_zero_at_the_witness(encoding):
+def test_the_penalty_block_is_zero_at_the_witness(encoding):
+    """Algebraically exactly zero; in floating point, zero to within the noise.
+
+    ``Qubo.energy`` evaluates the residual as a dense ``z'Qz`` product, so
+    double-precision cancellation leaves ~1e-13 against strengths of ~24-62.
+    The bound is scaled to the strength rather than a magic absolute, and
+    cannot hide a real breach: ``derive_penalties`` floors every strength at
+    1.0 and every residual is an integer square, so the cheapest genuine
+    violation costs a whole strength -- nine orders above this bound.
+    """
     inst = _instance()
     enc = encode(inst, encoding)
-    assert enc.penalties.energy(encode_solution(enc, inst.witness)) == 0.0
+    floor = 1e-9 * max(enc.strengths.full_liquidation, 1.0)
+    assert abs(enc.penalties.energy(encode_solution(enc, inst.witness))) < floor
 
 
 @pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
