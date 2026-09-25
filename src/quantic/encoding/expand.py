@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from quantic.encoding.cvar import CVaRGadget, expand_cvar
 from quantic.encoding.layout import Layout
 from quantic.encoding.qubo import LinearForm, Qubo, QuboBuilder
 from quantic.encoding.registry import VarRegistry
@@ -201,17 +202,25 @@ def _variance(
 
 
 def expand_objective(
-    instance: Instance, layout: Layout, registry: VarRegistry
+    instance: Instance,
+    layout: Layout,
+    registry: VarRegistry,
+    *,
+    gadget: CVaRGadget | None = None,
 ) -> QuboBreakdown:
     """Spec section 5.2's four terms as four QUBOs over ``registry``."""
     risk = instance.risk
     if isinstance(risk, VarianceRisk):
         risk_qubo = _variance(instance, layout, registry, risk.lam)
     elif isinstance(risk, CVaRRisk):
-        raise NotImplementedError(
-            "CVaRRisk needs the Rockafellar-Uryasev gadget: a binary-expanded zeta "
-            "plus two auxiliaries per scenario. See M3a plan Task 8"
-        )
+        if gadget is None:
+            raise ValueError(
+                "CVaRRisk needs a gadget: build_cvar_gadget derives the zeta, u and g "
+                "grids from the instance, and the penalty strength comes from "
+                "derive_penalties. expand_objective will not invent either"
+            )
+        cost, cvar_penalty = expand_cvar(instance, layout, registry, gadget)
+        risk_qubo = cost + cvar_penalty
     else:
         raise NotImplementedError(
             f"expand_objective does not know how to encode risk spec {risk.name!r} "

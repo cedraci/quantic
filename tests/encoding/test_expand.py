@@ -137,24 +137,6 @@ def test_concave_impact_is_exact_under_a_table_encoding():
         )
 
 
-def test_cvar_risk_defers_to_task_eight():
-    import dataclasses
-
-    from quantic.problem.risk import CVaRRisk
-    from quantic.problem.scenarios import ScenarioSet
-
-    inst = _instance()
-    scenarios = ScenarioSet(
-        returns=np.zeros((2, 2, 2)), weights=np.array([0.5, 0.5]), seed=0
-    )
-    cvar = dataclasses.replace(
-        inst, risk=CVaRRisk(lam=1e-6, alpha=0.95, scenarios=scenarios)
-    )
-    layout = plan_layout(cvar, BinaryEncoding())
-    with pytest.raises(NotImplementedError, match="CVaRRisk"):
-        expand_objective(cvar, layout, layout.registry)
-
-
 def test_an_unknown_risk_spec_is_refused_even_carrying_a_lam():
     """Dispatch on type. The same impostor M2b caught in the evaluator."""
     import dataclasses
