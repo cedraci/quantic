@@ -90,10 +90,16 @@ def test_the_penalty_block_is_exactly_zero_at_a_feasible_witness(encoding, facto
     """Exactly zero, up to the float noise a dense Q-matrix accumulation leaves
     when a non-integer derived strength scales an algebraically-zero square."""
     inst = factory()
-    layout, registry, _, _, penalties = _setup(inst, encoding)
-    assert penalties.energy(_bits(layout, registry, inst, inst.witness)) == pytest.approx(
-        0.0, abs=1e-6
-    )
+    layout, registry, _, strengths, penalties = _setup(inst, encoding)
+    # Algebraically exactly zero; Qubo.energy evaluates it as a dense z'Qz
+    # product, so what survives is double-precision cancellation (~1e-13
+    # against strengths of ~24-62). The bound is scaled to the strength, not
+    # a magic absolute, and cannot hide a real breach: derive_penalties floors
+    # every strength at 1.0 and every residual is an integer square, so the
+    # cheapest genuine violation costs a whole strength -- nine orders of
+    # magnitude above this bound, six above the noise.
+    floor = 1e-9 * max(strengths.full_liquidation, 1.0)
+    assert abs(penalties.energy(_bits(layout, registry, inst, inst.witness))) < floor
 
 
 @pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
