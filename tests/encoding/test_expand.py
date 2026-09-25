@@ -137,13 +137,6 @@ def test_concave_impact_is_exact_under_a_table_encoding():
         )
 
 
-def test_concave_impact_under_the_log_encoding_defers_to_task_six():
-    inst = _instance(dials=Dials(concave_impact=True))
-    layout = plan_layout(inst, BinaryEncoding())
-    with pytest.raises(NotImplementedError, match="approximand"):
-        expand_objective(inst, layout, layout.registry)
-
-
 def test_cvar_risk_defers_to_task_eight():
     import dataclasses
 

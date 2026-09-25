@@ -35,7 +35,7 @@ class QuboBreakdown:
     temporary: Qubo
     permanent: Qubo
     risk: Qubo
-    approximand: object | None = None
+    approximand: ApproximandReport | None = None
 
     @property
     def total(self) -> Qubo:
@@ -58,6 +58,53 @@ def cell_temporary_cost(instance: Instance, i: int, t: int, lots: int) -> float:
     return float(model.temporary_cost(traded, p) * traded * a.price)
 
 
+@dataclass(frozen=True)
+class ApproximandReport:
+    """The quadratic substituted for concave impact, and what it cost.
+
+    Emitted only when the encoding offers no exact per-value table -- that is,
+    only for the log encoding with dial D1 on. Its absence is the encoder's
+    claim that the term was represented exactly.
+    """
+
+    coefficients: dict[tuple[int, int], tuple[float, float]]
+    max_abs_error: float
+    max_rel_error: float
+    worst_cell: tuple[int, int]
+
+    def temporary_cost(self, schedule) -> float:
+        """The substituted temporary-impact term, summed over cells."""
+        total = 0.0
+        for (i, t), (b, c) in self.coefficients.items():
+            x = float(schedule.lots[i][t])
+            total += b * x + c * x * x
+        return total
+
+    def describe(self) -> dict:
+        """JSON-safe, for the results row."""
+        return {
+            "kind": "quadratic_least_squares",
+            "max_abs_error": self.max_abs_error,
+            "max_rel_error": self.max_rel_error,
+            "worst_cell": list(self.worst_cell),
+        }
+
+
+def _fit_quadratic(values: tuple[int, ...], costs: dict[int, float]) -> tuple[float, float]:
+    """Least-squares ``b*x + c*x**2`` over the cell's admissible lot values.
+
+    No constant term: ``f(0) == 0`` exactly, and a fitted offset would shift
+    every energy including the empty schedule's.
+    """
+    grid = [v for v in values if v != 0]
+    if not grid:
+        return 0.0, 0.0
+    design = np.array([[float(v), float(v) * float(v)] for v in grid], dtype=float)
+    target = np.array([costs[v] for v in grid], dtype=float)
+    solution, *_ = np.linalg.lstsq(design, target, rcond=None)
+    return float(solution[0]), float(solution[1])
+
+
 def _spread(instance: Instance, layout: Layout, registry: VarRegistry) -> Qubo:
     builder = QuboBuilder(registry)
     for plan in layout.cells:
@@ -67,8 +114,15 @@ def _spread(instance: Instance, layout: Layout, registry: VarRegistry) -> Qubo:
     return builder.build()
 
 
-def _temporary(instance: Instance, layout: Layout, registry: VarRegistry) -> Qubo:
+def _temporary(
+    instance: Instance, layout: Layout, registry: VarRegistry
+) -> tuple[Qubo, ApproximandReport | None]:
     builder = QuboBuilder(registry)
+    coefficients: dict[tuple[int, int], tuple[float, float]] = {}
+    max_abs = 0.0
+    max_rel = 0.0
+    worst: tuple[int, int] = (0, 0)
+
     for plan in layout.cells:
         costs = {v: cell_temporary_cost(instance, plan.asset, plan.bucket, v)
                  for v in plan.values}
@@ -76,19 +130,33 @@ def _temporary(instance: Instance, layout: Layout, registry: VarRegistry) -> Qub
         if exact is not None:
             builder.add_form(exact)
             continue
-        if instance.dials.concave_impact:
-            raise NotImplementedError(
-                f"concave impact (D1) has no exact quadratic form under the "
-                f"{layout.encoding_name!r} encoding, so it needs an explicit "
-                "approximand and a reported error. See M3a plan Task 6"
+        if not instance.dials.concave_impact:
+            # Almgren-Chriss is exactly quadratic in the lots, so one
+            # coefficient carries the whole cell: cost(x) == cost(1) * x**2.
+            builder.add_square(
+                plan.value_form,
+                cell_temporary_cost(instance, plan.asset, plan.bucket, 1),
             )
-        # D1 off is Almgren-Chriss, whose cost is exactly quadratic in the lots,
-        # so one coefficient carries the whole cell: cost(x) == cost(1) * x**2.
-        builder.add_square(
-            plan.value_form,
-            cell_temporary_cost(instance, plan.asset, plan.bucket, 1),
-        )
-    return builder.build()
+            continue
+        b, c = _fit_quadratic(plan.values, costs)
+        coefficients[(plan.asset, plan.bucket)] = (b, c)
+        builder.add_form(plan.value_form, b)
+        builder.add_square(plan.value_form, c)
+        for v in plan.values:
+            error = abs(costs[v] - (b * v + c * v * v))
+            if error > max_abs:
+                max_abs, worst = error, (plan.asset, plan.bucket)
+            if costs[v] != 0.0:
+                max_rel = max(max_rel, error / abs(costs[v]))
+
+    if not coefficients:
+        return builder.build(), None
+    return builder.build(), ApproximandReport(
+        coefficients=coefficients,
+        max_abs_error=max_abs,
+        max_rel_error=max_rel,
+        worst_cell=worst,
+    )
 
 
 def _permanent(instance: Instance, layout: Layout, registry: VarRegistry) -> Qubo:
@@ -149,9 +217,11 @@ def expand_objective(
             f"expand_objective does not know how to encode risk spec {risk.name!r} "
             f"({type(risk).__name__}). Dispatch is on type, never on a lam attribute"
         )
+    temporary, approximand = _temporary(instance, layout, registry)
     return QuboBreakdown(
         spread=_spread(instance, layout, registry),
-        temporary=_temporary(instance, layout, registry),
+        temporary=temporary,
         permanent=_permanent(instance, layout, registry),
         risk=risk_qubo,
+        approximand=approximand,
     )
