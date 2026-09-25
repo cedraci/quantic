@@ -213,3 +213,26 @@ def test_evaluate_does_not_check_feasibility():
 def test_evaluate_rejects_a_schedule_of_the_wrong_shape():
     with pytest.raises(ValueError, match="shape"):
         evaluate(_instance(), Schedule(lots=((1, 1, 1), (1, 1, 1))))
+
+
+def test_an_unknown_risk_spec_raises_even_if_it_has_a_lam_attribute():
+    """Dispatch must be on type, not on the presence of an attribute name.
+
+    M2b's CVaRRisk carries its own `lam`. Dispatching on
+    `getattr(risk, "lam", None)` would score a CVaR instance as variance --
+    silently, with a plausible number, and with no test able to see it.
+    """
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True, slots=True)
+    class _NotVariance:
+        lam: float = 1.0
+        name: str = "not_variance"
+
+        def describe(self) -> dict:
+            return {"name": self.name, "lam": self.lam}
+
+    inst = _instance()
+    impostor = dataclasses.replace(inst, risk=_NotVariance())
+    with pytest.raises(NotImplementedError, match="not_variance"):
+        evaluate(impostor, impostor.witness)
