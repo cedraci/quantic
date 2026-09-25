@@ -89,6 +89,7 @@ class Qubo:
                 "Q must be upper triangular: a coefficient below the diagonal would "
                 "be counted twice by energy()"
             )
+        object.__setattr__(self, "Q", q)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Qubo):

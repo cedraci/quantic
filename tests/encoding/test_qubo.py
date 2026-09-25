@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from quantic.encoding.qubo import LinearForm, QuboBuilder
+from quantic.encoding.qubo import LinearForm, Qubo, QuboBuilder
 from quantic.encoding.registry import RegistryBuilder
 
 
@@ -126,3 +126,17 @@ def test_equality_is_defined_despite_the_array_field():
     b.add_linear(("a",), 1.0)
     assert b.build() == QuboBuilder(reg).build() + b.build()
     assert np.array_equal(b.build().Q, b.build().Q)
+
+
+def test_qubo_converts_and_stores_python_list_as_float64_array():
+    """Qubo converts Q to ndarray float64 at construction and stores it."""
+    reg = _registry(("a",), ("b",))
+    # Construct from Python nested list, not numpy array
+    q = Qubo(Q=[[1.0, 2.0], [0.0, 3.0]], constant=0.0, registry=reg)
+    # Q field must be ndarray
+    assert isinstance(q.Q, np.ndarray)
+    assert q.Q.dtype == np.float64
+    # hash must work (requires tobytes method on Q)
+    assert isinstance(hash(q), int)
+    # energy should work
+    assert q.energy([1, 1]) == pytest.approx(1.0 + 2.0 * 1.0 + 3.0)
