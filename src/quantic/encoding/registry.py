@@ -9,7 +9,7 @@ Key conventions, fixed here because every module below depends on them:
 
     ("x", i, t, b)      expansion bit b of the lots traded in cell (i, t)
     ("y", i, t)         the min-participation indicator for cell (i, t)
-    ("block", k)        the all-or-nothing bit for block k
+    ("block", i, t)     the all-or-nothing bit for the block on cell (i, t)
     ("card", t, j)      cardinality slack bit j in bucket t
     ("zeta", b)         expansion bit b of the Rockafellar-Uryasev zeta
     ("u", s, b)         expansion bit b of the tail excess in scenario s
