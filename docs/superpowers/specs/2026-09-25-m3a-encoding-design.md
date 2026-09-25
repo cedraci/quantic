@@ -255,7 +255,18 @@ asymmetry so nobody later "fixes" it into a false claim.
 
 ## 12. The M3a gate — `tests/encoding/test_m3a_gate.py`
 
-For every one of **64 instances × 3 encodings**:
+**Tier coverage.** A dense QUBO matrix is `n²` doubles. At T3 the one-hot
+layout names roughly `30 × 12 × 16 ≈ 5,760` bits, which is 265 MB *per term* —
+so materialising the breakdown there would need gigabytes, and the gate could
+not run. Energy equality therefore covers **T0, T1 and T2 under all three
+encodings** (48 instances × 3) and **T3 under the log encoding**, whose
+`30 × 12 × 4` layout stays tractable. T3 under one-hot and domain-wall is
+covered by §13's variable budget, which counts keys rather than building
+matrices — and which is the artifact showing those cells cannot reach the QPU
+in any case. Every one of the 64 instances is therefore encoded and gated;
+what varies is how many encodings can be materialised at the largest tier.
+
+For every instance × materialisable encoding:
 
 1. `encode(instance, encoding)` succeeds and emits a `Qubo` that asserts
    quadratic.
@@ -267,9 +278,11 @@ For every one of **64 instances × 3 encodings**:
    tolerance.
 3. The penalty block contributes **exactly zero** at the feasible witness.
 4. Perturbing the witness by one lot into infeasibility **increases** the total
-   energy. This is the testable form of the penalty guarantee; the stronger
-   claim — that the QUBO's global minimum is feasible — requires enumeration
-   and is M3b's to make.
+   energy, on the instances where a one-lot edit is representable — D2 and D4
+   restrict a cell's admissible values, so the perturbed schedule need not be
+   encodable there. This is the testable form of the penalty guarantee; the
+   stronger claim — that the QUBO's global minimum is feasible — requires
+   enumeration and is M3b's to make.
 5. `decode(encode(witness)) == witness`.
 6. `ApproximandReport.max_abs_error` and `CVaRGadget.resolution` are finite,
    reported, and within their asserted bounds.
@@ -305,6 +318,7 @@ auxiliaries in closed form. The §14 gate stays reachable.
 | `encoding/expand.py` | objective → `QuboBreakdown`; `ApproximandReport` |
 | `encoding/cvar.py` | `CVaRGadget` and the ζ / u / g grids |
 | `encoding/penalty.py` | constraint quadratisation and derived bounds |
+| `encoding/encode.py` | `EncodedInstance`, `encode` — the orchestrator |
 | `encoding/decode.py` | bits → `Schedule`, classification |
 | `encoding/diagnostics.py` | dynamic range, variable budget |
 | `tests/encoding/test_m3a_gate.py` | the 64 × 3 gate |
