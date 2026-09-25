@@ -4560,9 +4560,19 @@ def gate(ladder):
                 if got != pytest.approx(want, rel=REL):
                     findings["term_energy"][(*tag, name)] = (got, want)
 
+        # Algebraically the penalty residual is exactly zero at a feasible
+        # point. Qubo.energy evaluates it as a dense z'Qz product, so what
+        # survives is double-precision cancellation: measured at ~1e-13
+        # against strengths of ~24-62, i.e. ~5e-15 relative. The bound below
+        # is scaled to the strength rather than being a magic absolute, and
+        # it cannot hide a real breach: derive_penalties floors every
+        # strength at 1.0 and every residual is an integer square, so the
+        # cheapest genuine violation costs a whole strength -- nine orders
+        # of magnitude above this bound, six above the noise.
         paid = encoded.penalties.energy(bits)
-        if paid != 0.0:
-            findings["penalty_zero"][tag] = paid
+        floor = 1e-9 * max(encoded.strengths.full_liquidation, 1.0)
+        if abs(paid) >= floor:
+            findings["penalty_zero"][tag] = (paid, floor)
 
         if not (instance.dials.discrete_participation or instance.dials.block_trades):
             grid = instance.witness.as_array().copy()

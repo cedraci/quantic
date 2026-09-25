@@ -276,7 +276,14 @@ For every instance × materialisable encoding:
    present. Equality is exact up to floating-point round-off only — a relative
    tolerance at the scale of double-precision accumulation, never a modelling
    tolerance.
-3. The penalty block contributes **exactly zero** at the feasible witness.
+3. The penalty block contributes **zero** at the feasible witness — exactly
+   zero algebraically, and in floating point zero to within a bound scaled to
+   the penalty strength. `Qubo.energy` evaluates the residual as a dense
+   `z'Qz` product, so double-precision cancellation leaves ~1e-13 against
+   strengths of ~24–62 (~5e-15 relative). This is not a modelling tolerance:
+   `derive_penalties` floors every strength at 1.0 and every residual is an
+   integer square, so the cheapest genuine breach costs a whole strength —
+   nine orders of magnitude above the bound asserted.
 4. Perturbing the witness by one lot into infeasibility **increases** the total
    energy, on the instances where a one-lot edit is representable — D2 and D4
    restrict a cell's admissible values, so the perturbed schedule need not be
