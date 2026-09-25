@@ -192,11 +192,20 @@ def plan_layout(instance: Instance, encoding: IntegerEncoding) -> Layout:
                 keys = encoding.bit_keys(("x", i, t), values)
                 for k in keys:
                     builder.add(k)
+                if encoding.supports_exact_table:
+                    indicator_form = encoding.indicator_form(keys, values)
+                else:
+                    # Reached only because len(values) <= 1 -- the log
+                    # encoding's own indicator_form is None here, since it has
+                    # no table to compute 1[x > 0] from. But a cell that can
+                    # only take the value 0 never trades, so its contribution
+                    # to sum_i y[i,t] is identically zero, not unknown.
+                    indicator_form = LinearForm.constant_form(0.0)
                 cells.append(
                     CellPlan(
                         asset=i, bucket=t, kind=kind, values=values, bit_keys=keys,
                         value_form=encoding.value_form(keys, values),
-                        indicator_form=encoding.indicator_form(keys, values),
+                        indicator_form=indicator_form,
                         validity_forms=encoding.validity_forms(keys, values),
                         validity_products=encoding.validity_products(keys, values),
                         encoding=encoding, table_keys=keys, indicator_key=None,
@@ -205,7 +214,7 @@ def plan_layout(instance: Instance, encoding: IntegerEncoding) -> Layout:
                 )
                 continue
 
-            if kind == PLAIN:
+            if kind == PLAIN and not has_cardinality:
                 keys = encoding.bit_keys(("x", i, t), values)
                 for k in keys:
                     builder.add(k)
@@ -223,15 +232,24 @@ def plan_layout(instance: Instance, encoding: IntegerEncoding) -> Layout:
             # Spec section 6.2: x = m*y + residual, with the residual forced to
             # zero when y is clear. The penalty itself is Task 7's; the layout
             # only has to name the bits and build the value.
+            #
+            # A PLAIN cell (no real venue minimum) falls through here too when
+            # cardinality is present: the log encoding has no other way to
+            # express 1[x > 0], so effective_minimum forces y to double as that
+            # indicator even with no minimum to enforce. With
+            # effective_minimum == 1 this is x = 1*y + residual over
+            # [0, cap - 1], whose value set (0..cap) is exactly the PLAIN set --
+            # x == 0 is y == 0; x == v > 0 is y == 1, residual == v - 1.
+            effective_minimum = max(minimum, 1)
             y_key: VarKey = ("y", i, t)
             builder.add(y_key)
-            residual_values = tuple(range(max(values) - minimum + 1))
+            residual_values = tuple(range(max(values) - effective_minimum + 1))
             residual_keys = encoding.bit_keys(("x", i, t), residual_values)
             for k in residual_keys:
                 builder.add(k)
-            value_form = LinearForm.of(y_key, float(minimum)) + encoding.value_form(
-                residual_keys, residual_values
-            )
+            value_form = LinearForm.of(
+                y_key, float(effective_minimum)
+            ) + encoding.value_form(residual_keys, residual_values)
             cells.append(
                 CellPlan(
                     asset=i, bucket=t, kind=SEMI_CONTINUOUS, values=values,
@@ -239,7 +257,7 @@ def plan_layout(instance: Instance, encoding: IntegerEncoding) -> Layout:
                     indicator_form=LinearForm.of(y_key, 1.0),
                     validity_forms=(), validity_products=(),
                     encoding=encoding, table_keys=(), indicator_key=y_key,
-                    residual_keys=residual_keys, min_lots=minimum,
+                    residual_keys=residual_keys, min_lots=effective_minimum,
                 )
             )
 

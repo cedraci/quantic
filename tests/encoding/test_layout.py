@@ -52,6 +52,13 @@ def _value_at(layout, plan, bits):
     return builder.build().energy(vector)
 
 
+def _indicator_at(layout, plan, bits):
+    builder = QuboBuilder(layout.registry)
+    builder.add_form(plan.indicator_form)
+    vector = [bits.get(k, 0) for k in layout.registry.keys]
+    return builder.build().energy(vector)
+
+
 @pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
 def test_every_cell_round_trips_every_admissible_value(encoding):
     layout = plan_layout(_instance(), encoding)
@@ -174,6 +181,42 @@ def test_the_registry_holds_every_cell_key_exactly_once(encoding):
     named = [k for plan in layout.cells for k in plan.bit_keys]
     assert sorted(named) == sorted(set(named))
     assert set(named) <= set(layout.registry.keys)
+
+
+def test_indicator_is_forced_under_log_encoding_even_with_a_degenerate_minimum():
+    """min_lots == 1 (PLAIN) must still get a real indicator when cardinality is
+    present; the generator emits exactly this pairing (min_lots[i] == 1 for an
+    asset that never trades or trades at most 1 lot)."""
+    inst = _instance(
+        dials=Dials(discrete_participation=True),
+        constraints=(FullLiquidation(), Cardinality(k=2), MinParticipation((1, 3))),
+    )
+    layout = plan_layout(inst, BinaryEncoding())
+    for plan in layout.cells:
+        assert plan.indicator_form is not None
+    plan = layout.cell(0, 0)
+    assert plan.values == (0, 1, 2, 3, 4)
+    for v in plan.values:
+        assert plan.decode(plan.encode(v)) == v
+        assert _value_at(layout, plan, plan.encode(v)) == pytest.approx(float(v))
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
+def test_a_cell_whose_minimum_exceeds_its_cap_still_has_a_zero_indicator_under_cardinality(
+    encoding,
+):
+    inst = _instance(
+        dials=Dials(discrete_participation=True),
+        constraints=(FullLiquidation(), Cardinality(k=2), MinParticipation((9, 1))),
+        witness=Schedule(lots=((0, 0), (4, 4))),
+        initial_lots=(0, 8),
+        max_lots_per_bucket=4,
+    )
+    layout = plan_layout(inst, encoding)
+    plan = layout.cell(0, 0)
+    assert plan.values == (0,)
+    assert plan.indicator_form is not None
+    assert _indicator_at(layout, plan, plan.encode(0)) == pytest.approx(0.0)
 
 
 def test_an_unknown_constraint_type_is_refused_even_carrying_a_known_name():
