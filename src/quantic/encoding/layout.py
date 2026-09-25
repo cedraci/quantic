@@ -21,6 +21,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+import numpy as np
+
 from quantic.encoding.integer import IntegerEncoding
 from quantic.encoding.qubo import LinearForm
 from quantic.encoding.registry import RegistryBuilder, VarKey, VarRegistry
@@ -29,6 +31,7 @@ from quantic.problem.constraints.cardinality import Cardinality
 from quantic.problem.constraints.full_liquidation import FullLiquidation
 from quantic.problem.constraints.min_participation import MinParticipation
 from quantic.problem.instance import Instance
+from quantic.problem.schedule import Schedule
 
 PLAIN = "plain"
 SEMI_CONTINUOUS = "semi_continuous"
@@ -275,3 +278,23 @@ def plan_layout(instance: Instance, encoding: IntegerEncoding) -> Layout:
         n_assets=instance.n_assets,
         n_buckets=instance.n_buckets,
     )
+
+
+def encode_schedule(
+    layout: Layout, schedule: Schedule, registry: VarRegistry
+) -> np.ndarray:
+    """The canonical bit vector for ``schedule``, in ``registry`` order.
+
+    Bits the layout does not name -- cardinality slack, the CVaR grids -- are
+    left at zero here; their values depend on the penalty and gadget
+    configuration and are filled in by the callers that own them.
+    """
+    if (schedule.n_assets, schedule.n_buckets) != (layout.n_assets, layout.n_buckets):
+        raise ValueError(
+            f"schedule shape ({schedule.n_assets}, {schedule.n_buckets}) does not match "
+            f"the layout ({layout.n_assets}, {layout.n_buckets})"
+        )
+    bits: dict[VarKey, int] = {}
+    for plan in layout.cells:
+        bits.update(plan.encode(int(schedule.lots[plan.asset][plan.bucket])))
+    return np.array([bits.get(k, 0) for k in registry.keys], dtype=np.int64)
