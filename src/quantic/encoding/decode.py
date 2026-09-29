@@ -51,6 +51,12 @@ def decode(encoded: EncodedInstance, bits) -> DecodedSample:
             f"decode needs {encoded.n_vars} variables, got a vector of shape "
             f"{vector.shape}"
         )
+    if not np.all((vector == 0) | (vector == 1)):
+        raise ValueError(
+            "every entry must be 0 or 1. A sampler that returns spins must be "
+            "converted before decoding: read as bits, -1 and +1 describe a "
+            "schedule nobody sampled"
+        )
     by_key = {key: int(vector[i]) for i, key in enumerate(encoded.registry.keys)}
 
     grid = [[0] * encoded.layout.n_buckets for _ in range(encoded.layout.n_assets)]

@@ -141,3 +141,18 @@ def test_decoding_a_wrong_length_vector_is_refused():
     enc = encode(_instance(), BinaryEncoding())
     with pytest.raises(ValueError, match="variables"):
         decode(enc, np.zeros(enc.n_vars - 1, dtype=np.int64))
+
+
+@pytest.mark.parametrize(
+    "fill",
+    [-1, 2, 0.5],
+    ids=["a spin vector", "a count above one", "a relaxed fraction"],
+)
+def test_decoding_a_vector_that_is_not_binary_is_refused(fill):
+    """Samplers hand back spins as readily as bits, and ``energy`` already refuses
+    them. Read as bits, a spin vector decodes to a schedule nobody sampled."""
+    enc = encode(_instance(), BinaryEncoding())
+    vector = encode_solution(enc, enc.instance.witness).astype(float)
+    vector[0] = fill
+    with pytest.raises(ValueError, match="0 or 1"):
+        decode(enc, vector)
