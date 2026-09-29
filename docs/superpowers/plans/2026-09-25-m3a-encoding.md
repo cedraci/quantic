@@ -314,7 +314,6 @@ def test_a_square_of_a_three_term_form_matches_direct_arithmetic():
         + LinearForm.of(("c",), 3.0)
         + LinearForm.constant_form(-4.0)
     )
-    q = QuboBuilder(reg).add_square(f) or None
     builder = QuboBuilder(reg)
     builder.add_square(f)
     q = builder.build()
@@ -582,22 +581,12 @@ class QuboBuilder:
         return Qubo(Q=self._q.copy(), constant=self._constant, registry=self._registry)
 ```
 
-- [ ] **Step 4: Fix the one malformed test line**
-
-`test_a_square_of_a_three_term_form_matches_direct_arithmetic` above contains a stray first assignment to `q`. Replace the body's first two statements with just the `builder` lines so the test reads:
-
-```python
-    builder = QuboBuilder(reg)
-    builder.add_square(f)
-    q = builder.build()
-```
-
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 4: Run the test to verify it passes**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/encoding/test_qubo.py -q`
 Expected: every test in the file passes.
 
-- [ ] **Step 6: Run the full suite, lint and the layer contract**
+- [ ] **Step 5: Run the full suite, lint and the layer contract**
 
 ```bash
 .venv/Scripts/python.exe -m pytest -q
@@ -607,7 +596,7 @@ Expected: every test in the file passes.
 
 Expected: all green, `Contracts: 1 kept, 0 broken.`
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/quantic/encoding/qubo.py tests/encoding/test_qubo.py
@@ -1732,12 +1721,25 @@ def _all_schedules(instance):
                     yield Schedule(lots=((a0, a1), (b0, b1)))
 
 
+_BUILT: dict = {}
+
+
+def _built(instance, encoding):
+    """Build the layout and expansion once per (instance, encoding).
+
+    The schedule loops below run to 625 grids each; rebuilding the expansion
+    inside them would cost thousands of redundant builds per test.
+    """
+    key = (instance.content_hash, encoding.name)
+    if key not in _BUILT:
+        layout = plan_layout(instance, encoding)
+        _BUILT[key] = (layout, expand_objective(instance, layout, layout.registry))
+    return _BUILT[key]
+
+
 def _energies(instance, encoding, schedule):
-    layout = plan_layout(instance, encoding)
-    reg = layout.registry
-    breakdown = expand_objective(instance, layout, reg)
-    bits = encode_schedule(layout, schedule, reg)
-    return breakdown, bits
+    layout, breakdown = _built(instance, encoding)
+    return breakdown, encode_schedule(layout, schedule, layout.registry)
 
 
 @pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
@@ -3497,9 +3499,13 @@ def test_the_energy_at_the_witness_equals_the_reference_objective(encoding):
 
 @pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
 def test_the_penalty_block_is_exactly_zero_at_the_witness(encoding):
+    """Exactly zero, up to the float noise a dense Q-matrix accumulation leaves
+    when a non-integer derived strength scales an algebraically-zero square --
+    see tests/encoding/test_penalty.py for the full justification of the bound."""
     inst = _instance()
     enc = encode(inst, encoding)
-    assert enc.penalties.energy(encode_solution(enc, inst.witness)) == 0.0
+    floor = 1e-9 * max(enc.strengths.full_liquidation, 1.0)
+    assert abs(enc.penalties.energy(encode_solution(enc, inst.witness))) < floor
 
 
 @pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
@@ -4405,11 +4411,15 @@ git commit -m "feat(encoding): record dynamic range and the variable budget"
 
 **Equality is exact up to double-precision round-off only.** `evaluate` accumulates term by term in a Python loop; `Qubo.energy` accumulates through a matrix product. The orders differ, so the results differ in the last bits and nowhere else. A relative tolerance at `1e-9` is orders of magnitude tighter than any modelling error and orders of magnitude looser than accumulation noise, so it cannot absorb a real defect. This is **not** the kind of tolerance M2b §3 refused: no modelling slack hides in it, and the two genuinely inexact pieces — the D1 approximand and the CVaR gadget — are handled by comparing against the function the encoder *declares*, with their own separately asserted bounds.
 
-**The gate is slow, deliberately.** Each test re-encodes rather than sharing a
-fixture of every encoded instance. Holding all 160 of them at once would run to
-gigabytes; re-encoding keeps peak memory at one instance and costs minutes of
-wall clock. Expect the file to take several minutes, and do not "optimise" it
-into a module-scoped dict of `EncodedInstance`.
+**One encoding pass, many named assertions.** A module-scoped fixture walks
+every case once, runs every check inline and accumulates each check's failures
+into its own dict; the named tests then assert on those dicts. Encoding is the
+expensive part — at T2 and T3 an instance carries thousands of variables across
+six dense terms — so encoding once instead of once per test is the difference
+between minutes and the better part of an hour. Only the small finding dicts
+outlive the loop, so peak memory stays at one instance. Do **not** "simplify"
+this into a fixture returning every `EncodedInstance`: holding all 160 at once
+runs to gigabytes.
 
 **Tier coverage, and why it is not all four everywhere.** A dense QUBO matrix is `n²` doubles. At T3 the one-hot layout names roughly 5,760 bits, which is 265 MB **per term**, so materialising the breakdown there would need gigabytes. Energy equality therefore runs on **T0, T1 and T2 under all three encodings** — 48 instances × 3 — and on **T3 under the log encoding**, whose 30 × 12 × 4 layout stays tractable. T3 under one-hot and domain-wall is covered by the variable budget, which is the artifact that shows those cells cannot reach the QPU in any case. The design doc's §12 records this.
 
@@ -4428,7 +4438,7 @@ Rockafellar-Uryasev gadget under every encoding -- and each is compared against
 the function the encoder declares it implements, with its own asserted bound.
 """
 
-import dataclasses
+import json
 
 import numpy as np
 import pytest
@@ -4503,151 +4513,189 @@ def _expected_total(encoded, schedule, zeta):
     return reference.total - continuous + declared
 
 
+@pytest.fixture(scope="module")
+def gate(ladder):
+    """One pass over every case, collecting each check's failures.
+
+    Encoding is by far the expensive part -- at T2 and T3 a single instance
+    carries thousands of variables and six dense terms -- so the whole gate
+    encodes each case exactly once and accumulates findings per check. The
+    named tests below then assert on those findings, so a failure still says
+    which instance, which encoding and which check, without re-encoding
+    anything. Only the small finding dicts outlive the loop, so peak memory
+    stays at one instance.
+    """
+    findings: dict[str, dict] = {
+        name: {}
+        for name in (
+            "encodes", "total_energy", "term_energy", "penalty_zero",
+            "one_lot", "round_trip", "substitution", "cvar_resolution",
+            "dynamic_range", "describe",
+        )
+    }
+
+    for instance, encoding in _cases(ladder):
+        tag = (instance.instance_id, encoding.name)
+        try:
+            encoded = encode(instance, encoding)
+        except Exception as exc:  # noqa: BLE001 - the gate reports, it does not filter
+            findings["encodes"][tag] = repr(exc)
+            continue
+
+        zeta = _zeta_for(encoded, instance.witness)
+        bits = encode_solution(encoded, instance.witness, zeta=zeta)
+
+        energy = encoded.qubo.energy(bits)
+        expected = _expected_total(encoded, instance.witness, zeta)
+        if energy != pytest.approx(expected, rel=REL):
+            findings["total_energy"][tag] = (energy, expected)
+
+        if not isinstance(instance.risk, CVaRRisk):
+            reference = reference_breakdown(encoded, instance.witness)
+            for name, qubo, want in (
+                ("spread", encoded.breakdown.spread, reference.spread_cost),
+                ("temporary", encoded.breakdown.temporary,
+                 reference.temporary_impact_cost),
+                ("permanent", encoded.breakdown.permanent,
+                 reference.permanent_impact_cost),
+                ("risk", encoded.breakdown.risk, reference.risk_cost),
+            ):
+                got = qubo.energy(bits)
+                if got != pytest.approx(want, rel=REL):
+                    findings["term_energy"][(*tag, name)] = (got, want)
+
+        # Algebraically the penalty residual is exactly zero at a feasible
+        # point. Qubo.energy evaluates it as a dense z'Qz product, so what
+        # survives is double-precision cancellation: measured at ~1e-13
+        # against strengths of ~24-62, i.e. ~5e-15 relative. The bound below
+        # is scaled to the strength rather than being a magic absolute, and
+        # it cannot hide a real breach: derive_penalties floors every
+        # strength at 1.0 and every residual is an integer square, so the
+        # cheapest genuine violation costs a whole strength -- nine orders
+        # of magnitude above this bound, six above the noise.
+        paid = encoded.penalties.energy(bits)
+        floor = 1e-9 * max(encoded.strengths.full_liquidation, 1.0)
+        if abs(paid) >= floor:
+            findings["penalty_zero"][tag] = (paid, floor)
+
+        if not (instance.dials.discrete_participation or instance.dials.block_trades):
+            grid = instance.witness.as_array().copy()
+            cell = np.argwhere(grid > 0)[0]
+            grid[cell[0], cell[1]] -= 1
+            short = Schedule.from_array(grid)
+            bad = encoded.qubo.energy(
+                encode_solution(encoded, short, zeta=_zeta_for(encoded, short))
+            )
+            if not bad > energy:
+                findings["one_lot"][tag] = (bad, energy)
+
+        sample = decode(encoded, bits)
+        if sample.schedule != instance.witness or sample.classification != "feasible":
+            findings["round_trip"][tag] = sample.classification
+
+        approximand = encoded.breakdown.approximand
+        if approximand is not None:
+            ok = (
+                encoding.name == "binary"
+                and instance.dials.concave_impact
+                and np.isfinite(approximand.max_abs_error)
+                and approximand.max_abs_error >= 0.0
+            )
+            if not ok:
+                findings["substitution"][tag] = "unexpected approximand"
+        elif instance.dials.concave_impact and not encoding.supports_exact_table:
+            findings["substitution"][tag] = "concave impact silently unapproximated"
+
+        if encoded.gadget is not None:
+            if not (np.isfinite(encoded.gadget.resolution)
+                    and encoded.gadget.resolution > 0.0):
+                findings["substitution"][tag] = "gadget reports no resolution"
+            losses = encoded.gadget.losses_from(
+                instance, encoded.layout, instance.witness
+            )
+            aux = encoded.gadget.optimal_aux(losses, zeta)
+            declared = encoded.gadget.encoded_cvar(losses, zeta, aux)
+            continuous = instance.risk.lam * cvar_of(
+                instance.risk.scenarios, instance, instance.witness,
+                alpha=instance.risk.alpha, zeta=zeta,
+            )
+            if abs(declared - continuous) > encoded.gadget.resolution:
+                findings["cvar_resolution"][tag] = (
+                    abs(declared - continuous), encoded.gadget.resolution
+                )
+
+        ratio = dynamic_range_ratio(encoded.qubo)
+        if not (np.isfinite(ratio) and ratio >= 1.0):
+            findings["dynamic_range"][tag] = ratio
+
+        try:
+            if json.loads(json.dumps(encoded.describe()))["encoding"] != encoding.name:
+                findings["describe"][tag] = "encoding name missing"
+        except (TypeError, ValueError) as exc:
+            findings["describe"][tag] = repr(exc)
+
+    return findings
+
+
 def test_the_ladder_is_still_sixteen_combinations_on_four_tiers(ladder):
     assert len(ladder) == 16 * 4 == 64
 
 
-def test_every_instance_encodes_under_every_materialisable_encoding(ladder):
+def test_every_instance_encodes_under_every_materialisable_encoding(gate):
     """THE GATE, part one: nothing in the ladder defeats the encoder."""
-    broken = {}
-    for instance, encoding in _cases(ladder):
-        try:
-            encode(instance, encoding)
-        except Exception as exc:  # noqa: BLE001 - the gate reports, it does not filter
-            broken[(instance.instance_id, encoding.name)] = repr(exc)
-    assert not broken, broken
+    assert not gate["encodes"], gate["encodes"]
 
 
-def test_the_energy_at_the_witness_equals_the_reference_objective(ladder):
+def test_the_energy_at_the_witness_equals_the_reference_objective(gate):
     """THE GATE, part two. The load-bearing assertion of the whole milestone."""
-    wrong = {}
-    for instance, encoding in _cases(ladder):
-        encoded = encode(instance, encoding)
-        zeta = _zeta_for(encoded, instance.witness)
-        bits = encode_solution(encoded, instance.witness, zeta=zeta)
-        energy = encoded.qubo.energy(bits)
-        expected = _expected_total(encoded, instance.witness, zeta)
-        if energy != pytest.approx(expected, rel=REL):
-            wrong[(instance.instance_id, encoding.name)] = (energy, expected)
-    assert not wrong, wrong
+    assert not gate["total_energy"], gate["total_energy"]
 
 
-def test_each_objective_term_matches_on_its_own(ladder):
+def test_each_objective_term_matches_on_its_own(gate):
     """A single scalar says nothing about which term is wrong -- objective.py's rule."""
-    wrong = {}
-    for instance, encoding in _cases(ladder):
-        if isinstance(instance.risk, CVaRRisk):
-            continue  # the risk term is the gadget's; covered above and below
-        encoded = encode(instance, encoding)
-        bits = encode_solution(encoded, instance.witness)
-        reference = reference_breakdown(encoded, instance.witness)
-        pairs = (
-            ("spread", encoded.breakdown.spread, reference.spread_cost),
-            ("temporary", encoded.breakdown.temporary, reference.temporary_impact_cost),
-            ("permanent", encoded.breakdown.permanent, reference.permanent_impact_cost),
-            ("risk", encoded.breakdown.risk, reference.risk_cost),
-        )
-        for name, qubo, expected in pairs:
-            if qubo.energy(bits) != pytest.approx(expected, rel=REL):
-                wrong[(instance.instance_id, encoding.name, name)] = (
-                    qubo.energy(bits), expected
-                )
-    assert not wrong, wrong
+    assert not gate["term_energy"], gate["term_energy"]
 
 
-def test_the_penalty_block_is_exactly_zero_at_every_witness(ladder):
+def test_the_penalty_block_is_exactly_zero_at_every_witness(gate):
     """A feasible point pays nothing. Exactly nothing."""
-    paying = {}
-    for instance, encoding in _cases(ladder):
-        encoded = encode(instance, encoding)
-        zeta = _zeta_for(encoded, instance.witness)
-        bits = encode_solution(encoded, instance.witness, zeta=zeta)
-        energy = encoded.penalties.energy(bits)
-        if energy != 0.0:
-            paying[(instance.instance_id, encoding.name)] = energy
-    assert not paying, paying
+    assert not gate["penalty_zero"], gate["penalty_zero"]
 
 
-def test_a_one_lot_violation_raises_the_total_energy(ladder):
+def test_a_one_lot_violation_raises_the_total_energy(gate):
     """The property derived penalties exist to guarantee."""
-    for instance, encoding in _cases(ladder):
-        if instance.dials.discrete_participation or instance.dials.block_trades:
-            continue  # a one-lot edit need not be representable under D2 or D4
-        grid = instance.witness.as_array().copy()
-        cell = np.argwhere(grid > 0)[0]
-        grid[cell[0], cell[1]] -= 1
-        short = Schedule.from_array(grid)
-        encoded = encode(instance, encoding)
-        zeta = _zeta_for(encoded, instance.witness)
-        good = encoded.qubo.energy(
-            encode_solution(encoded, instance.witness, zeta=zeta)
-        )
-        bad = encoded.qubo.energy(
-            encode_solution(encoded, short, zeta=_zeta_for(encoded, short))
-        )
-        assert bad > good, (instance.instance_id, encoding.name)
+    assert not gate["one_lot"], gate["one_lot"]
 
 
-def test_every_witness_decodes_back_to_itself(ladder):
-    round_trip = {}
-    for instance, encoding in _cases(ladder):
-        encoded = encode(instance, encoding)
-        zeta = _zeta_for(encoded, instance.witness)
-        sample = decode(encoded, encode_solution(encoded, instance.witness, zeta=zeta))
-        if sample.schedule != instance.witness or sample.classification != "feasible":
-            round_trip[(instance.instance_id, encoding.name)] = sample.classification
-    assert not round_trip, round_trip
+def test_every_witness_decodes_back_to_itself(gate):
+    assert not gate["round_trip"], gate["round_trip"]
 
 
-def test_every_declared_substitution_reports_a_finite_bound(ladder):
+def test_every_declared_substitution_reports_a_finite_bound(gate):
     """The approximand and the gadget say what they cost, and mean it."""
-    for instance, encoding in _cases(ladder):
-        encoded = encode(instance, encoding)
-        approximand = encoded.breakdown.approximand
-        if approximand is not None:
-            assert encoding.name == "binary"
-            assert instance.dials.concave_impact
-            assert np.isfinite(approximand.max_abs_error)
-            assert approximand.max_abs_error >= 0.0
-        elif instance.dials.concave_impact:
-            assert encoding.supports_exact_table
-        if encoded.gadget is not None:
-            assert np.isfinite(encoded.gadget.resolution)
-            assert encoded.gadget.resolution > 0.0
+    assert not gate["substitution"], gate["substitution"]
 
 
-def test_the_declared_cvar_stays_within_its_reported_resolution(ladder):
+def test_the_declared_cvar_stays_within_its_reported_resolution(gate):
     """The second of the gadget's two assertions, across the whole ladder."""
-    outside = {}
-    for instance, encoding in _cases(ladder):
-        if not isinstance(instance.risk, CVaRRisk):
-            continue
-        encoded = encode(instance, encoding)
-        zeta = _zeta_for(encoded, instance.witness)
-        losses = encoded.gadget.losses_from(instance, encoded.layout, instance.witness)
-        aux = encoded.gadget.optimal_aux(losses, zeta)
-        declared = encoded.gadget.encoded_cvar(losses, zeta, aux)
-        continuous = instance.risk.lam * cvar_of(
-            instance.risk.scenarios, instance, instance.witness,
-            alpha=instance.risk.alpha, zeta=zeta,
-        )
-        if abs(declared - continuous) > encoded.gadget.resolution:
-            outside[(instance.instance_id, encoding.name)] = (
-                abs(declared - continuous), encoded.gadget.resolution
-            )
-    assert not outside, outside
+    assert not gate["cvar_resolution"], gate["cvar_resolution"]
 
 
-def test_every_encoded_instance_records_a_dynamic_range(ladder):
+def test_every_encoded_instance_records_a_dynamic_range(gate):
     """Section 6.4: no result is interpretable without it."""
-    for instance, encoding in _cases(ladder):
-        ratio = dynamic_range_ratio(encode(instance, encoding).qubo)
-        assert np.isfinite(ratio)
-        assert ratio >= 1.0
+    assert not gate["dynamic_range"], gate["dynamic_range"]
+
+
+def test_the_encoding_description_is_json_safe_for_every_instance(gate):
+    assert not gate["describe"], gate["describe"]
 
 
 def test_the_variable_budget_covers_every_cell_of_the_study(ladder):
-    """THE GATE, part three: which cells can reach Advantage2 at all."""
+    """THE GATE, part three: which cells can reach Advantage2 at all.
+
+    Counts keys rather than building matrices, so it covers all 64 instances
+    under all three encodings -- including the T3 table encodings no dense
+    matrix could hold.
+    """
     rows = variable_budget(ladder)
     assert len(rows) == 64 * len(ENCODINGS)
     assert {r.tier for r in rows} == {"T0", "T1", "T2", "T3"}
@@ -4656,14 +4704,6 @@ def test_the_variable_budget_covers_every_cell_of_the_study(ladder):
     fitting = [r for r in rows if r.fits_dense_embedding]
     assert fitting, "no cell of the study fits a dense embedding"
     assert all(r.n_vars <= DENSE_EMBEDDING_CEILING for r in fitting)
-
-
-def test_the_encoding_description_is_json_safe_for_every_instance(ladder):
-    import json
-
-    for instance, encoding in _cases(ladder):
-        payload = json.dumps(encode(instance, encoding).describe())
-        assert json.loads(payload)["encoding"] == encoding.name
 
 
 def test_encoding_is_reproducible_across_calls(ladder):
