@@ -7,6 +7,7 @@ from quantic.core.types import Asset
 from quantic.encoding.expand import cell_temporary_cost, expand_objective
 from quantic.encoding.integer import BinaryEncoding, DomainWallEncoding, OneHotEncoding
 from quantic.encoding.layout import encode_schedule, plan_layout
+from quantic.problem.constraints.block_trades import Block, BlockTrades
 from quantic.problem.constraints.full_liquidation import FullLiquidation
 from quantic.problem.dials import Dials
 from quantic.problem.instance import Instance
@@ -114,3 +115,53 @@ def test_no_approximand_appears_when_d1_is_off_under_the_log_encoding():
     inst = _instance(dials=Dials())
     layout = plan_layout(inst, BinaryEncoding())
     assert expand_objective(inst, layout, layout.registry).approximand is None
+
+
+def _block_instance() -> Instance:
+    return _instance(
+        dials=Dials(concave_impact=True, block_trades=True),
+        constraints=(
+            FullLiquidation(),
+            BlockTrades((Block(asset=0, bucket=0, lots=2),)),
+        ),
+    )
+
+
+def test_the_substituted_term_still_charges_the_cells_it_did_not_fit():
+    """A block cell is one bit and exact, so the fit never sees it.
+
+    The M3a gate's first finding: the reference dropped those cells, and came
+    out low by exactly what the blocks cost.
+    """
+    inst = _block_instance()
+    layout = plan_layout(inst, BinaryEncoding())
+    breakdown = expand_objective(inst, layout, layout.registry)
+    report = breakdown.approximand
+    assert (0, 0) not in report.coefficients
+    for a1 in range(5):
+        for b0 in range(5):
+            for b1 in range(5):
+                for a0 in (0, 2):
+                    schedule = Schedule(lots=((a0, a1), (b0, b1)))
+                    bits = encode_schedule(layout, schedule, layout.registry)
+                    assert breakdown.temporary.energy(bits) == pytest.approx(
+                        report.temporary_cost(schedule), rel=REL
+                    )
+
+
+def test_an_unfitted_cell_is_charged_what_the_evaluator_charges_it():
+    inst = _block_instance()
+    layout = plan_layout(inst, BinaryEncoding())
+    report = expand_objective(inst, layout, layout.registry).approximand
+    only_the_block = Schedule(lots=((2, 0), (0, 0)))
+    assert report.temporary_cost(only_the_block) == pytest.approx(
+        evaluate(inst, only_the_block).temporary_impact_cost, rel=REL
+    )
+
+
+def test_the_substituted_term_refuses_a_value_an_exact_cell_cannot_take():
+    inst = _block_instance()
+    layout = plan_layout(inst, BinaryEncoding())
+    report = expand_objective(inst, layout, layout.registry).approximand
+    with pytest.raises(ValueError, match="asset 0, bucket 0"):
+        report.temporary_cost(Schedule(lots=((1, 0), (0, 0))))

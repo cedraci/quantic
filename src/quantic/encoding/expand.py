@@ -15,7 +15,7 @@ is Task 6's explicit approximand.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -66,12 +66,18 @@ class ApproximandReport:
     Emitted only when the encoding offers no exact per-value table -- that is,
     only for the log encoding with dial D1 on. Its absence is the encoder's
     claim that the term was represented exactly.
+
+    Not every cell is fitted even then. A block cell is one bit and a cell
+    capped at zero lots has nothing to fit, so both keep their exact cost, and
+    ``exact`` carries those tables: the substituted term is a sum over every
+    cell, not only over the ones the fit touched.
     """
 
     coefficients: dict[tuple[int, int], tuple[float, float]]
     max_abs_error: float
     max_rel_error: float
     worst_cell: tuple[int, int]
+    exact: dict[tuple[int, int], dict[int, float]] = field(default_factory=dict)
 
     def temporary_cost(self, schedule) -> float:
         """The substituted temporary-impact term, summed over cells."""
@@ -79,6 +85,15 @@ class ApproximandReport:
         for (i, t), (b, c) in self.coefficients.items():
             x = float(schedule.lots[i][t])
             total += b * x + c * x * x
+        for (i, t), table in self.exact.items():
+            lots = int(schedule.lots[i][t])
+            if lots not in table:
+                raise ValueError(
+                    f"{lots} is not one of the values {tuple(table)} the cell at "
+                    f"(asset {i}, bucket {t}) can take, so the encoder has no cost "
+                    "for it"
+                )
+            total += table[lots]
         return total
 
     def describe(self) -> dict:
@@ -120,6 +135,7 @@ def _temporary(
 ) -> tuple[Qubo, ApproximandReport | None]:
     builder = QuboBuilder(registry)
     coefficients: dict[tuple[int, int], tuple[float, float]] = {}
+    exact_tables: dict[tuple[int, int], dict[int, float]] = {}
     max_abs = 0.0
     max_rel = 0.0
     worst: tuple[int, int] = (0, 0)
@@ -130,6 +146,7 @@ def _temporary(
         exact = plan.exact_cost_form(costs)
         if exact is not None:
             builder.add_form(exact)
+            exact_tables[(plan.asset, plan.bucket)] = costs
             continue
         if not instance.dials.concave_impact:
             # Almgren-Chriss is exactly quadratic in the lots, so one
@@ -157,6 +174,7 @@ def _temporary(
         max_abs_error=max_abs,
         max_rel_error=max_rel,
         worst_cell=worst,
+        exact=exact_tables,
     )
 
 
