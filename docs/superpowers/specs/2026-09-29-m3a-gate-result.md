@@ -1,41 +1,48 @@
-# M3a gate — first complete run, what it found, and the whole-branch review
+# M3a gate — first complete run, what it found, and two reviews
 
 **Written:** 2026-09-29
 **Branch:** `feat/m3a-encoding`
 **Follows:** `2026-09-28-m3a-gate-handoff.md`
-**Plan:** `docs/superpowers/plans/2026-09-25-m3a-encoding.md`, Task 12 Steps 2–4
+**Plan:** `docs/superpowers/plans/2026-09-25-m3a-encoding.md`, Task 12 Steps 2–5
 
 ---
 
 ## Verdict
 
-**The gate does not pass, and M3a is not complete.** It fails one check, on 2 of the
-160 cases it encodes. That is down from three checks and 33 cases on the first run,
-and what remains is a derivation that has not been made rather than a slip in the
-code. It needs a decision; the options are at the end of Finding B.
+**The gate passes.** Sixteen tests, no finding on any of the 160 cases it encodes.
+
+It did not pass when it first ran to completion. It failed three checks on 33 cases,
+for two reasons, both of them real: a reference that was wrong, and a CVaR encoding
+whose energy did not rank schedules the way the objective does. Two reviews then
+found that the gate could not see a wrong gadget, and that the first repair held only
+at the default safety factor.
 
 | what | first complete run | now |
 |---|---|---|
-| gate | 10 of 13 pass | **13 of 14 pass** |
+| gate | 10 of 13 pass | **16 of 16 pass** |
 | energy equality, total | fails, 16 cases | passes |
 | energy equality, term by term | fails, 8 cases | passes |
-| one-lot violation raises the energy | fails, 17 cases | **fails, 2 cases** |
-| full suite | 906 pass, 1 skipped, 1 fails | 914 pass, 1 skipped, **1 fails** (the same one) |
+| one-lot violation raises the energy | fails, 17 cases | passes |
+| full suite | 906 pass, 1 skipped, 1 fails | **941 pass, 1 skipped, 0 fail** |
 | `ruff check src tests` | clean | clean |
 | `lint-imports` | 1 kept, 0 broken | 1 kept, 0 broken |
-| gate wall time | 5 min 40 s | 7 min 06 s, with other work on the machine |
+| gate wall time | 5 min 40 s | 9 min 28 s, with other work on the machine |
 
 The first-run column is the gate as handed off, with only the fold of `595c69c`
 applied so that it could finish; the full-suite figure in it was taken one commit
-later, after Finding A was fixed.
+later, after Finding A was fixed. The gate is slower now because it checks more: a
+second energy at every CVaR case, and a lot left unsold at every cell the witness
+holds rather than at one.
 
 The skip is `tests/micro/test_reconstruction_gate.py:104`, which needs a real paired
 L2/L3 bundle named by `QUANTIC_REAL_BUNDLE`. It is unrelated to this milestone.
 
 Machine: Windows 11, i9-9900, 63.9 GB, Python 3.11.15, pytest 9.1.1.
 
-Plan Task 12 Step 5 — the commit named "complete the M3a gate" — has **not** been
-made, because the gate is not complete.
+**What passing does and does not establish** is set out under "What is still open".
+In short: the encoder equals the objective it declares, on every case. That the
+QUBO's global minimum is feasible is proved by enumeration on instances small enough
+to enumerate, and is not something the gate can show at the ladder's size.
 
 ## What changed on the branch
 
@@ -43,13 +50,18 @@ made, because the gate is not complete.
 |---|---|---|
 | `595c69c` | perf: fold repeated keys before expanding a product | the handoff's question |
 | `0d3e316` | fix: the substituted impact term dropped the cells it never fitted | the gate |
-| `6890720` | fix: decode refuses a vector that is not binary | review |
-| `502ee2b` | fix: size the CVaR auxiliary grids at zeta's width | review |
-| `f4d49a3` | test: the gate ties the CVaR gadget back to `problem/` | review |
-| `7ae04ff` | fix: derive the CVaR strength from the gadget's own trade-off | the gate, and review |
+| `6890720` | fix: decode refuses a vector that is not binary | first review |
+| `502ee2b` | fix: size the CVaR auxiliary grids at zeta's width | first review |
+| `f4d49a3` | test: the gate ties the CVaR gadget back to `problem/` | first review |
+| `7ae04ff` | fix: derive the CVaR strength from the gadget's own trade-off | the gate, and first review |
+| `683592c` | fix: the hard strengths cover the gain in risk under D3 | the gate, and first review |
+| `af5f2df` | feat: the auxiliaries the QUBO's own minimum takes | second review |
+| `9367baf` | fix: bound the risk a unit of violation buys, not the risk a cell buys | second review |
+| `cd723a2` | test: the gate sees a gadget that is wrong but agrees with itself | second review |
 
 Each fix was written test-first, and each test was watched failing for the stated
-reason before the code changed.
+reason before the code changed. Where a test was later moved to a different
+instance, each defect was put back by monkeypatch and the test run against it.
 
 ## The handoff's question, answered
 
@@ -111,7 +123,7 @@ combined D1 with D4 under the log encoding; three do now.
 This matters beyond the gate: M3b's optimality bracket is stated against
 `reference_breakdown`.
 
-## Finding B — with D3 on, the energy did not rank schedules. Mostly fixed; one part open.
+## Finding B — with D3 on, the energy did not rank schedules. Fixed, in three steps.
 
 ### What the first run showed
 
@@ -156,10 +168,10 @@ constraint otherwise**." `derive_penalties` gave all five families one strength,
 the stated ground that every residual is an integer-valued square. The CVaR residual
 is in currency.
 
-### What was fixed
+### Step one — the CVaR strength
 
-`7ae04ff`. The CVaR strength is now the one at which dropping `u_s` a step below its
-target costs more than it saves, by the safety factor and no more:
+`7ae04ff`. The CVaR strength is now the one at which dropping `u_s` a step below a
+target on the grid costs more than it saves, by the safety factor and no more:
 
 ```
 P_cvar = safety · λ · max_s w_s / ((1 − α) · δ)
@@ -186,10 +198,10 @@ Every D3 cell, binary, at the feasible witness:
 | T2 | 268 – 1,195 | not measured | 24 – 273 | 0.09 – 0.24 | 0.60 – 1.34 |
 | T3 | 3,095 – 14,372 | not measured | 817 – 3,903 | 0.18 – 0.45 | 0.99 – 1.81 |
 
-### What is still open
+### Step two — the hard strengths
 
-**The one-lot check still fails on 2 cells**, and passes on the rest by margin rather
-than by construction:
+Step one left the one-lot check failing on 2 cells, and passing on the rest by margin
+rather than by construction:
 
 | instance | encoding | energy at witness | one lot short | change |
 |---|---|---|---|---|
@@ -197,45 +209,94 @@ than by construction:
 | `T2-D3` | domain_wall | 815.93 | 811.93 | −4.00 |
 
 `encode` derives the hard strengths from an objective built with the CVaR penalty at
-zero. No lot bit is coupled to the risk term in it, so the hard strengths bound the
-gain in spread and impact and **not the gain in risk**. The reviewer measured the
-consequence directly: at `T0-D1+D3` the strength stays at 30.2 while the worst
-one-lot gain in the true objective is 5.8 at the balanced `λ`, 45.1 at ten times it
-and 438 at a hundred. The variance instances scale correctly.
+zero. No lot bit is coupled to the risk term in it, so the hard strengths bounded the
+gain in spread and impact and **not the gain in risk**; they did not move with `λ` at
+all. The first reviewer measured the consequence: at `T0-D1+D3` the strength stayed at
+30.2 while the worst one-lot gain in the true objective was 5.8 at the balanced `λ`,
+45.1 at ten times it and 438 at a hundred.
 
-And at T2 and T3 the leftover (24 to 3,903) is still larger than the hard strengths
-(44 to 285), so its movement between neighbouring schedules can still outweigh them.
-The last column above says the same thing from the other side: with 8 `ζ` bits, the
-declared resolution at T3 is the size of the objective.
+Three ways out were put to the owner: bound the risk gain and add it to the hard
+strengths; spend more `ζ` bits; or scope the guarantee to D3-off cells. **The first
+was chosen.** A fourth — reading the bound off the QUBO's own coefficients, as
+`max_single_cell_gain` does for the other terms — had been tried and is not an
+option: it gives strengths of 1.7e6 to 8.9e6 at T0 and T1, at which size round-off in
+the penalty block alone breaks energy equality at `1e-9` on 32 cases.
 
-### Options
+`683592c`. `CVaRGadget.risk_gain_bound` bounds the gain from the problem. CVaR is
+monotone and translation-equivariant, so it moves by no more than the largest change
+in any one scenario's loss; two resolutions and a cost gap carry the comparison from
+continuous Rockafellar–Uryasev to the encoded value at a snapped `ζ`.
+`derive_penalties` adds it to the gain it reads off the matrix.
 
-**1. Bound the risk gain, and add it to the hard strengths.** CVaR moves by at most
-the largest change in any scenario's loss, and the encoded value sits within
-`resolution` of it, so the gain a one-cell change can buy in the risk term is bounded
-by `λ · max_s |ΔL_s| + 2 · resolution`. This is the derivation §8 asks for. It costs
-dynamic range: the `2 · resolution` term alone puts the hard strength near 2,200 at
-`T2-D3` against 44 today, and near 76,000 at `T3-D1+D3+D4` against 279. But no D3 cell
-reaches the hardware in any case — see the budget — so that cost falls on cells that
-are classical-only.
+### Step three — a unit of violation is not a cell
 
-**2. Spend more `ζ` bits.** The resolution is linear in the step, so each bit halves
-it, at 31 variables a bit with 15 scenarios. It does not by itself make the guarantee
-structural; it shrinks what option 1 has to add.
+`9367baf`. The second reviewer found that step two held only because the safety
+factor defaults to exactly two, and showed it.
 
-**3. Scope the guarantee.** State that with D3 on the one-lot property is reported
-rather than guaranteed, and restrict the check to D3-off cells. Cheapest. It weakens
-the gate, which the handoff asks not to do, and M3b's gate — decoded QUBO optimum
-equals exact MILP optimum on T0, all 16 combinations — inherits the question.
+As first written, the bound was on what changing *one cell* can do to a loss: the
+cell's reach times the tail sum of its coefficients. But a breach of cardinality is
+repaired by moving lots *between two buckets* of one name, which moves only the
+holdings in between — a partial sum. A partial sum can be twice the largest tail sum,
+because the buckets after the second, whose coefficients the tail sum nets off, are
+not touched.
 
-A rigorous bound read off the QUBO's own coefficients, as `max_single_cell_gain` does
-for the other terms, was tried and is not an option: it gives hard strengths of
-1.7e6 to 8.9e6 at T0 and T1, and at that size the round-off in the penalty block
-alone breaks energy equality at `1e-9` on 32 cases.
+Two names, two buckets, one name a bucket, and a tail scenario in which both names
+fall 6% in the first bucket and recover 3% in the second. Every state of the lot bits
+enumerated, the gadget minimised exactly over `ζ` and the auxiliaries for each:
 
-None of these was taken. Each changes what M3a claims.
+| safety | hard strength | best feasible | best infeasible | global minimum |
+|---|---|---|---|---|
+| 2.0 | 2,900.4 | 1,843.88 | 2,906.48 | feasible |
+| 1.2 | 1,638.1 | 1,823.86 | 1,644.17 | **infeasible** |
 
-## Whole-branch review
+The winning state sells both names at once. It reproduces under all three encodings.
+`encode(safety_factor=...)` is public, and M4's adaptive strategy exists to lower it.
+
+The bound now takes the largest partial sum over any run of buckets. A tail sum is
+the partial sum that runs to the end, so the one bound covers a lot left unsold and a
+lot moved. **The lowest energy in the landscape is feasible at safety factors of 2.0,
+1.5, 1.2 and 1.05, under all three encodings.**
+
+On the ladder the two bounds nearly coincide — its scenarios rarely reverse — so the
+strengths are those of step two to within 0.2%:
+
+| tier | hard strength under D3, before | now | ratio |
+|---|---|---|---|
+| T0 | 6 – 32 | 6 – 281 | 1.0 – 15.3 |
+| T1 | 44 – 90 | 278 – 829 | 4.5 – 11.4 |
+| T2 | 44 – 93 | 915 – 8,044 | 20.5 – 86.8 |
+| T3 | 106 – 285 | 17,117 – 87,611 | 116 – 337 |
+
+**The dynamic range did not move**, on any of the 32 D3 instances. Its extremes are
+set by the gadget's own coefficients, not by the hard constraints. The cost that was
+expected of this option when it was chosen did not arise.
+
+### What is still open
+
+**With 8 `ζ` bits, the declared resolution at T2 and T3 is the size of the
+objective** — the last column of the table under step one. The encoding is correct
+there and says what it costs; what it costs is a great deal. Each further bit halves
+it, at 31 variables a bit with 15 scenarios, in a budget where no D3 cell fits
+already. This is a choice of bit budget for M5 and was not made here.
+
+**The gate cannot prove the hard strengths sufficient.** The one-lot check is the
+testable form of the guarantee at the ladder's size: with the risk bound removed
+altogether it notices nothing at T0 or T1, and 30 cases at T2. The proof is the
+enumeration in `tests/encoding/test_encode.py`, on instances of 14 to 18 lot bits,
+which fails at every safety factor with the bound removed.
+
+**`max_single_cell_gain` is per cell too.** The gain in spread, impact and variance
+is still bounded by what one cell's bits can do, and a two-cell move could in
+principle buy twice that. It is 130 to 500 times looser than the worst true gain on
+the variance instances, so nothing is known to break — the first reviewer brute-forced
+every T0 variance QUBO of 30 bits or fewer and found the global minimum feasible in
+all 17. But at a safety factor below two that slack is what the guarantee would be
+resting on. Pre-existing, not changed here.
+
+**`optimal_aux` is not the QUBO's minimum**, and M3b must not use it as one. See the
+second review, I2.
+
+## First review — the whole branch
 
 One reviewer, range `8244a9f..93f37b5` — `main` to the branch head plus the fold. It
 read the diff in passes, ran twelve probes, and brute-forced every T0 variance QUBO
@@ -243,14 +304,14 @@ of 30 bits or fewer: 17 instance and encoding pairs, up to 2^30 states, global
 minimum feasible in all of them. Its verdict was **ready to merge with fixes**.
 
 `93f37b5` has the same tree as `595c69c`; the commit was re-made to correct a timing
-in its message. The five commits after it have not been through a second review.
+in its message.
 
 | finding | severity | disposition |
 |---|---|---|
 | C1 — with D3 on the QUBO does not rank schedules as the objective does | critical | fixed, `7ae04ff`; enumeration re-run |
 | C2 — the reference drops exact cells under binary with D1 and D4 | critical | fixed, `0d3e316`, found independently |
-| I1 — the gate's CVaR checks pass with a wrong loss model | important | fixed, `f4d49a3`; reproduced first |
-| I2 — under D3 the hard strengths ignore the risk term | important | **open** — Finding B |
+| I1 — the gate's CVaR checks pass with a wrong loss model | important | fixed, `f4d49a3` and `cd723a2`; reproduced first |
+| I2 — under D3 the hard strengths ignore the risk term | important | fixed, `683592c` and `9367baf` |
 | I3 — `decode` accepts non-binary input | important | fixed, `6890720` |
 | I4 — the `u` and `g` grid width depends on float rounding | important | fixed, `502ee2b` |
 | I5 — the penalty-zero floor has 12–22× headroom at T3, not six orders | important | **not taken** |
@@ -279,9 +340,81 @@ table encoding; not reached by the ladder. M2: a block larger than the per-bucke
 is accepted. M3: `ζ` and auxiliaries outside the grid are clamped silently. M4: the
 gain bound counts the diagonal three times, so strengths are 130 to 500 times the
 worst true gain on variance instances. M5: the one-lot check covers one cell and
+under-liquidation only — it now covers every held cell (`cd723a2`), still
 under-liquidation only. M6: the approximand is checked finite, not bounded. M7: a
 `# noqa: BLE001` for a rule that is not selected. M8: `EncodedInstance.qubo` rebuilds
 the dense sum on every access.
+
+## Second review — the fixes
+
+One reviewer, range `595c69c..683592c`: the six commits made after the first review.
+It was asked to look hardest at the two derivations, and to try to break them. It
+built an exact minimiser over `ζ` and the auxiliaries, validated against `Qubo.energy`
+to 3e-15, and ran it exhaustively over all 15,625 lot-grid schedules of a 2×3
+instance, ten random heavy-tailed instances and samples of `T0-D3` and `T0-D1+D3`.
+
+**It found no failure at the default settings.** The single-cell risk bound held
+everywhere it was tested, on the canonical states and on the auxiliary-minimised
+landscape, and `resolution` remained a valid bound at the new strength. Its verdict
+was **ready to merge with fixes**.
+
+| finding | severity | disposition |
+|---|---|---|
+| I1 — a unit of violation can buy two cells of risk; the guarantee holds only at a safety factor of two | important | fixed, `9367baf`; reproduced first |
+| I2 — at the derived strength `optimal_aux` is not the energy's minimum | important | fixed, `af5f2df` |
+| I3 — the gate cannot see a wrong gadget in several forms | important | fixed, `cd723a2`; reproduced first |
+| I4 — the tests pinning the derivations run where the excess is identically zero | important | fixed, `9367baf` |
+| M1 — `ApproximandReport`'s docstring says a zero-capped cell goes in `exact`; under binary it is fitted as `(0, 0)` | minor | **not taken** |
+| M2 — first review's M1, now with a correct `temporary_cost` | minor | **not taken** |
+| M3 — `temporary_cost` raises on an exact cell's inadmissible value, not on a fitted one's | minor | **not taken** |
+| M4 — `T0-D3+D4` has `λ = 0`, so it is a D3 case with no CVaR in it | minor | **not taken** |
+| M5 — `PenaltyStrengths.describe()` does not record the risk-gain component | minor | **not taken** |
+| M6 — the energy at a feasible state depends on the safety factor | minor | **not taken** |
+| M7 — a stale comment in the gate | minor | fixed, `cd723a2` |
+| M8 — `risk_gain_bound` is looser than the argument needs | minor | **not taken** |
+
+The three commits that answer this review have not themselves been reviewed.
+
+**On I2.** `optimal_aux` puts each `u_s` on the grid point nearest its target, which
+minimises the penalty. A target is rarely on the grid, and a step below the nearest
+point can save more in cost than it adds in penalty. The reviewer measured it off the
+minimum on 175 of 225 schedules of a 20-scenario instance and 48 of 4,000 sampled
+from `T0-D3`. Nothing in the gate depends on which is used. **M3b does:** design §13
+has it enumerate `x` and `ζ` and solve the auxiliaries in closed form, and with
+`optimal_aux` that is not the QUBO's minimum. `CVaRGadget.cheapest_aux` is the closed
+form for the energy. `optimal_aux` stays the canonical encoding, and the one
+`resolution` is stated at.
+
+**On I3.** The reviewer ran the gate's own check loop against a gadget broken eight
+ways and it passed all eight. On T0 and T1, 96 cases, the gate now reports:
+
+| the gadget, broken | the gate now reports |
+|---|---|
+| loss coefficients ×(−3) on cells the witness does not hold | `loss_model`, 48 |
+| `derived_penalty` × 0, × 1e-6, × 1000 | `gadget_inputs`, 45 each |
+| scenario weights halved inside the gadget | `gadget_inputs`, 48 |
+| gadget `α` 0.95 changed to 0.99 | `gadget_inputs`, 48 |
+| gadget `λ` doubled | `gadget_inputs`, 45 |
+| `risk_gain_bound` returns 0 | nothing at T0 or T1; `one_lot`, 30 at T2 |
+
+The loss model is compared at the schedule that sells nothing as well as at the
+witness, because a loss is a coefficient times a holding and the witness no longer
+holds most cells. The gadget's inputs and its strength are compared with the
+instance's. And energy equality is checked a second time at the smallest loss: at the
+optimal `ζ`, with `α` at 0.95 and fifteen scenarios, the tail holds one scenario or
+none, no `u` bit is set, and the first check never touches the excess term.
+
+**On I4.** Six equal-weight scenarios at `α = 0.9` make CVaR the largest loss. Only 3
+of 15,625 canonical states set any `u` bit, which is how I2 went unnoticed. The tests
+now run on twenty unevenly weighted fat-tailed scenarios at `α = 0.7`, where 222 of
+the 225 feasible schedules carry excess in four or more. One test asserted that the
+strength exceeded the safety factor times the bound, which is true of any bound; it
+is gone.
+
+**On M4.** `T0-D3+D4`'s witness holds nothing after the first bucket, so the balanced
+`λ` is zero. Its QUBO carries about 240 auxiliary variables with all-zero
+coefficients, and the variable budget counts them. That is the generator's doing and
+`problem/` was outside both reviews.
 
 ## Variable budget — Task 12 Step 3
 
