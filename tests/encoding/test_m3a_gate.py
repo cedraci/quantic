@@ -195,8 +195,12 @@ def gate(ladder):
             findings["substitution"][tag] = "concave impact silently unapproximated"
 
         if encoded.gadget is not None:
+            # A gadget that charges anything has a resolution to report. One
+            # built for lam == 0 tracks nothing and charges nothing, and zero
+            # is then the exact answer rather than a missing one.
+            floor = 0.0 if instance.risk.lam == 0.0 else np.nextafter(0.0, 1.0)
             if not (np.isfinite(encoded.gadget.resolution)
-                    and encoded.gadget.resolution > 0.0):
+                    and encoded.gadget.resolution >= floor):
                 findings["substitution"][tag] = "gadget reports no resolution"
             losses = encoded.gadget.losses_from(
                 instance, encoded.layout, instance.witness

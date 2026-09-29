@@ -6,13 +6,18 @@ They must all land in **one** registry, because column ``k`` has to mean the
 same bit in the objective, the penalties and the gadget alike. This module
 assembles that registry and then rebuilds every piece against it.
 
-The strength derivation needs two passes. ``derive_penalties`` reads the
-objective QUBO, and with dial D3 on the objective QUBO contains the CVaR
-penalty, whose magnitude is what is being derived. The loop is cut by the
-observation that the gadget's *keys* depend only on the instance and the bit
-budget, never on the strength: build the gadget at strength zero, derive from
-that objective, then rebuild at the derived strength. Both passes are pure, so
-the result is deterministic.
+The strength derivation needs two passes. The gadget's *keys* depend only on
+the instance and the bit budget, never on a strength, so the gadget is built
+once at strength zero to fix the registry. The hard constraints' strengths are
+derived from the objective expanded against that provisional gadget; the CVaR
+strength is derived by the gadget from its own trade-off, which the objective
+does not enter. Then everything is rebuilt at the derived strengths. Both
+passes are pure, so the result is deterministic.
+
+What this leaves open: the objective the hard strengths are derived from has
+the CVaR penalty at zero, so no lot bit is coupled to the risk term in it.
+With D3 on, the hard strengths therefore bound the gain in spread and impact
+and not the gain in risk.
 """
 
 from __future__ import annotations
@@ -100,12 +105,17 @@ def encode(
     )
     registry = _assemble(instance, layout, provisional)
     probe = expand_objective(instance, layout, registry, gadget=provisional)
-    strengths = derive_penalties(probe.total, layout, safety_factor=safety_factor)
+    strengths = derive_penalties(
+        probe.total, layout, safety_factor=safety_factor,
+        cvar=(
+            provisional.derived_penalty(safety_factor=safety_factor)
+            if needs_gadget
+            else 0.0
+        ),
+    )
 
     gadget = (
-        build_cvar_gadget(
-            instance, layout, n_zeta_bits=n_zeta_bits, penalty=strengths.cvar
-        )
+        dataclasses.replace(provisional, penalty=strengths.cvar)
         if needs_gadget
         else None
     )

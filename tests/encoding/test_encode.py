@@ -1,3 +1,4 @@
+import itertools
 import json
 
 import numpy as np
@@ -9,7 +10,7 @@ from quantic.encoding.integer import ENCODINGS, BinaryEncoding
 from quantic.problem.constraints.full_liquidation import FullLiquidation
 from quantic.problem.dials import Dials
 from quantic.problem.instance import Instance
-from quantic.problem.objective import cvar_of, optimal_zeta
+from quantic.problem.objective import cvar_of, evaluate, optimal_zeta
 from quantic.problem.params import AssetParams, MarketParams
 from quantic.problem.risk import CVaRRisk, VarianceRisk
 from quantic.problem.scenarios import ScenarioSet
@@ -163,3 +164,72 @@ def test_the_reference_breakdown_is_untouched_when_nothing_was_approximated():
     enc = encode(inst, BinaryEncoding())
     assert enc.breakdown.approximand is None
     assert reference_breakdown(enc, inst.witness) == evaluate(inst, inst.witness)
+
+
+def _risk_that_matters():
+    """Three buckets, six scenarios, and a lam at which risk is 44% of the total."""
+    rng = np.random.default_rng(7)
+    scenarios = ScenarioSet(
+        returns=rng.normal(scale=0.01, size=(6, 3, 2)),
+        weights=np.full(6, 1.0 / 6), seed=7,
+    )
+    return _instance(
+        n_buckets=3, dials=Dials(cvar_risk=True),
+        risk=CVaRRisk(lam=0.01, alpha=0.9, scenarios=scenarios),
+        witness=Schedule(lots=((2, 2, 0), (2, 2, 0))),
+    )
+
+
+def _every_feasible_schedule():
+    rows = [r for r in itertools.product(range(5), repeat=3) if sum(r) == 4]
+    return [Schedule(lots=(a, b)) for a in rows for b in rows]
+
+
+def test_with_cvar_on_the_encoding_resolves_the_objective_it_encodes():
+    """The M3a gate's second finding, at a size that can be enumerated.
+
+    The gadget's error is declared, and the declaration was honest -- but it
+    was three hundred times the whole range of the objective, so the energy
+    ranked the 225 feasible schedules by where their losses fell on the grid.
+    A declared error has to be smaller than what it is an error in.
+    """
+    inst = _risk_that_matters()
+    enc = encode(inst, BinaryEncoding())
+    true, energy = [], []
+    for schedule in _every_feasible_schedule():
+        zeta = enc.gadget.zeta.snap(optimal_zeta(inst, schedule))
+        true.append(evaluate(inst, schedule, zeta=zeta).total)
+        energy.append(enc.qubo.energy(encode_solution(enc, schedule, zeta=zeta)))
+    true, energy = np.array(true), np.array(energy)
+
+    assert np.abs(energy - true).max() <= enc.gadget.resolution
+    assert enc.gadget.resolution < true.max() - true.min()
+    chosen = true[int(np.argmin(energy))]
+    assert chosen - true.min() <= 2.0 * enc.gadget.resolution
+
+
+def test_the_cvar_strength_prices_one_grid_step_of_excess():
+    """Design section 8: a strength is derived per constraint.
+
+    Dropping ``u_s`` one step below its target saves ``lam * w_s * step /
+    (1 - alpha)`` and costs ``P * step**2``, so that is the trade the strength
+    has to win -- by the safety factor, and by no more.
+    """
+    inst = _risk_that_matters()
+    enc = encode(inst, BinaryEncoding(), safety_factor=3.0)
+    step = enc.gadget.zeta.step
+    saved = inst.risk.lam * (1.0 / 6) * step / (1.0 - inst.risk.alpha)
+    assert enc.strengths.cvar * step * step == pytest.approx(3.0 * saved, rel=1e-12)
+    assert enc.gadget.penalty == enc.strengths.cvar
+
+
+def test_a_cvar_instance_with_no_risk_aversion_carries_no_cvar_penalty():
+    """``lam == 0`` leaves the gadget nothing to track, so it charges nothing."""
+    inst = _risk_that_matters()
+    inst = _instance(
+        n_buckets=3, dials=inst.dials, witness=inst.witness,
+        risk=CVaRRisk(lam=0.0, alpha=0.9, scenarios=inst.risk.scenarios),
+    )
+    enc = encode(inst, BinaryEncoding())
+    assert enc.strengths.cvar == 0.0
+    assert enc.gadget.resolution == 0.0

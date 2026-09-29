@@ -139,6 +139,30 @@ class CVaRGadget:
         floor = self.penalty * float(self.n_scenarios) * half * half
         return float(cost_gap + floor)
 
+    def derived_penalty(self, *, safety_factor: float) -> float:
+        """The strength at which tracking ``L_s - zeta`` beats cheating on it.
+
+        The residual is in currency and moves in grid steps, not in units, so
+        it cannot share the strength of the integer squares. Dropping ``u_s``
+        one step below its target saves ``lam * w_s * step / (1 - alpha)`` in
+        cost and adds ``P * step**2`` in penalty; the strength has to win that
+        trade for the heaviest scenario, by the safety factor and no more.
+
+        No more, because the residual is never zero: each loss sits up to half
+        a step off the grid, and the penalty charges that whatever the
+        schedule. At this strength the charge is of the order of the cost gap
+        ``resolution`` already reports. At the strength of the hard
+        constraints it was hundreds to thousands of times the objective, and
+        the energy ranked schedules by where their losses fell on the grid.
+
+        ``lam == 0`` gives zero: there is no excess to track.
+        """
+        heaviest = float(np.max(np.asarray(self.weights, dtype=float)))
+        return float(
+            safety_factor * self.lam * heaviest
+            / ((1.0 - self.alpha) * self.zeta.step)
+        )
+
     def losses_from(
         self, instance: Instance, layout: Layout, schedule: Schedule
     ) -> np.ndarray:

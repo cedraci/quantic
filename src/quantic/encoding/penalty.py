@@ -193,15 +193,19 @@ def max_single_cell_gain(objective: Qubo, layout: Layout) -> float:
 
 
 def derive_penalties(
-    objective: Qubo, layout: Layout, *, safety_factor: float = 2.0
+    objective: Qubo, layout: Layout, *, safety_factor: float = 2.0, cvar: float = 0.0
 ) -> PenaltyStrengths:
     """Section 6.3's first strategy: a penalty larger than any gain it could buy.
 
-    Every penalty residual in this milestone is an integer-valued square, so a
-    one-unit violation costs at least ``1`` and the strength need only exceed
-    the gain. The floor of ``1.0`` keeps the constraints binding when the
-    objective is identically zero -- which happens whenever ``lam`` is zero and
-    the dials are off.
+    Every hard-constraint residual in this milestone is an integer-valued
+    square, so a one-unit violation costs at least ``1`` and the strength need
+    only exceed the gain. The floor of ``1.0`` keeps the constraints binding
+    when the objective is identically zero -- which happens whenever ``lam`` is
+    zero and the dials are off.
+
+    The CVaR residual is the exception: it is in currency and moves in grid
+    steps. Its strength is derived by the gadget, from the gadget's own
+    trade-off, and is passed in as ``cvar`` rather than sharing the one above.
     """
     if safety_factor <= 1.0:
         raise ValueError(
@@ -215,6 +219,6 @@ def derive_penalties(
         full_liquidation=strength,
         min_participation=strength if needs_min_participation else 0.0,
         cardinality=strength,
-        cvar=strength,
+        cvar=float(cvar),
         safety_factor=safety_factor,
     )
