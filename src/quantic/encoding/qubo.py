@@ -60,6 +60,21 @@ class LinearForm:
             terms=self.terms + other.terms,
         )
 
+    def folded(self) -> LinearForm:
+        """The same form with every key named once, in first-appearance order.
+
+        A holdings sum names a bit once per bucket it is still held through,
+        so a form assembled by addition can carry each key many times over.
+        Expanding a product pairwise over the repeats costs the square of
+        that multiplicity and buys nothing.
+        """
+        summed: dict[VarKey, float] = {}
+        for key, coef in self.terms:
+            summed[key] = summed.get(key, 0.0) + coef
+        if len(summed) == len(self.terms):
+            return self
+        return LinearForm(constant=self.constant, terms=tuple(summed.items()))
+
 
 @dataclass(frozen=True, eq=False)
 class Qubo:
@@ -170,12 +185,15 @@ class QuboBuilder:
     def add_product(self, a: LinearForm, b: LinearForm, scale: float = 1.0) -> None:
         """Accumulate ``scale * a * b``.
 
-        Both forms may repeat keys; repeats simply accumulate. The ``i == j``
+        Both forms may repeat keys; each is folded first, so the expansion
+        costs the distinct keys rather than the repeats. The ``i == j``
         case is delegated to :meth:`add_quadratic`, which folds it onto the
         diagonal -- the step a naive expansion gets wrong, because a binary's
         square is the binary itself rather than a separate quadratic term.
         """
         s = float(scale)
+        a = a.folded()
+        b = b.folded()
         self.add_constant(a.constant * b.constant * s)
         for key, coef in b.terms:
             self.add_linear(key, a.constant * coef * s)

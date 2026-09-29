@@ -140,3 +140,61 @@ def test_qubo_converts_and_stores_python_list_as_float64_array():
     assert isinstance(hash(q), int)
     # energy should work
     assert q.energy([1, 1]) == pytest.approx(1.0 + 2.0 * 1.0 + 3.0)
+
+
+def test_folding_sums_repeated_keys_in_first_appearance_order():
+    f = (
+        LinearForm.of(("b",), 1.0)
+        + LinearForm.of(("a",), 2.0)
+        + LinearForm.of(("b",), 4.0)
+        + LinearForm.constant_form(3.0)
+    )
+    g = f.folded()
+    assert g.constant == 3.0
+    assert g.terms == ((("b",), 5.0), (("a",), 2.0))
+
+
+def test_folding_a_form_without_repeats_changes_nothing():
+    f = LinearForm.of(("a",), 2.0) + LinearForm.of(("b",), 0.1)
+    assert f.folded() == f
+
+
+class _CountingBuilder(QuboBuilder):
+    def __init__(self, registry):
+        super().__init__(registry)
+        self.quadratic_calls = 0
+
+    def add_quadratic(self, key_a, key_b, coef):
+        self.quadratic_calls += 1
+        super().add_quadratic(key_a, key_b, coef)
+
+
+def test_a_product_costs_the_distinct_keys_not_the_repeats():
+    """A holdings sum names each bit once per bucket it is still held through.
+
+    Expanding the repeats pairwise is what put a single T3 CVaR instance past
+    ten minutes: the work must scale with the bits, not with how the form was
+    assembled.
+    """
+    reg = _registry(("a",), ("b",))
+    f = LinearForm.constant_form(1.0)
+    for _ in range(12):
+        f = f + LinearForm.of(("a",), 1.0) + LinearForm.of(("b",), 2.0)
+    b = _CountingBuilder(reg)
+    b.add_square(f)
+    assert b.quadratic_calls == 2 * 2
+
+
+def test_a_product_of_forms_with_repeated_keys_matches_direct_arithmetic():
+    reg = _registry(("a",), ("b",))
+    f = LinearForm.constant_form(-4.0)
+    for _ in range(3):
+        f = f + LinearForm.of(("a",), 1.0) + LinearForm.of(("b",), 2.0)
+    g = LinearForm.of(("b",), 5.0) + LinearForm.of(("b",), -1.0)
+    builder = QuboBuilder(reg)
+    builder.add_product(f, g)
+    q = builder.build()
+    for za in (0, 1):
+        for zb in (0, 1):
+            expected = (3 * za + 6 * zb - 4) * (4 * zb)
+            assert q.energy([za, zb]) == pytest.approx(expected)
