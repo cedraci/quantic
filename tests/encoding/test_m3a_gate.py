@@ -98,9 +98,9 @@ def gate(ladder):
     findings: dict[str, dict] = {
         name: {}
         for name in (
-            "encodes", "total_energy", "term_energy", "penalty_zero",
-            "one_lot", "round_trip", "substitution", "cvar_resolution",
-            "dynamic_range", "describe",
+            "encodes", "total_energy", "term_energy", "loss_model",
+            "penalty_zero", "one_lot", "round_trip", "substitution",
+            "cvar_resolution", "dynamic_range", "describe",
         )
     }
 
@@ -120,19 +120,37 @@ def gate(ladder):
         if energy != pytest.approx(expected, rel=REL):
             findings["total_energy"][tag] = (energy, expected)
 
+        # With D3 on the total is mostly the gadget's penalty, so a relative
+        # tolerance on it resolves whole currency units at T3 -- the scale of
+        # the impact terms themselves. The three terms the gadget does not
+        # touch are therefore compared on their own under every risk spec;
+        # only the risk term has no continuous counterpart to equal.
+        reference = reference_breakdown(encoded, instance.witness, zeta=zeta)
+        terms = [
+            ("spread", encoded.breakdown.spread, reference.spread_cost),
+            ("temporary", encoded.breakdown.temporary,
+             reference.temporary_impact_cost),
+            ("permanent", encoded.breakdown.permanent,
+             reference.permanent_impact_cost),
+        ]
         if not isinstance(instance.risk, CVaRRisk):
-            reference = reference_breakdown(encoded, instance.witness)
-            for name, qubo, want in (
-                ("spread", encoded.breakdown.spread, reference.spread_cost),
-                ("temporary", encoded.breakdown.temporary,
-                 reference.temporary_impact_cost),
-                ("permanent", encoded.breakdown.permanent,
-                 reference.permanent_impact_cost),
-                ("risk", encoded.breakdown.risk, reference.risk_cost),
-            ):
-                got = qubo.energy(bits)
-                if got != pytest.approx(want, rel=REL):
-                    findings["term_energy"][(*tag, name)] = (got, want)
+            terms.append(("risk", encoded.breakdown.risk, reference.risk_cost))
+        for name, qubo, want in terms:
+            got = qubo.energy(bits)
+            if got != pytest.approx(want, rel=REL):
+                findings["term_energy"][(*tag, name)] = (got, want)
+
+        if encoded.gadget is not None:
+            # Every CVaR check below is stated against the gadget's own
+            # losses, so a gadget pricing the wrong losses would agree with
+            # itself throughout. This is the one tie back to problem/.
+            priced = encoded.gadget.losses_from(
+                instance, encoded.layout, instance.witness
+            )
+            reported = instance.risk.scenarios.losses(instance, instance.witness)
+            scale = float(np.abs(reported).max())
+            if not np.allclose(priced, reported, rtol=REL, atol=REL * scale):
+                findings["loss_model"][tag] = float(np.abs(priced - reported).max())
 
         # Algebraically the penalty residual is exactly zero at a feasible
         # point. Qubo.energy evaluates it as a dense z'Qz product, so what
@@ -224,6 +242,11 @@ def test_the_energy_at_the_witness_equals_the_reference_objective(gate):
 def test_each_objective_term_matches_on_its_own(gate):
     """A single scalar says nothing about which term is wrong -- objective.py's rule."""
     assert not gate["term_energy"], gate["term_energy"]
+
+
+def test_the_gadget_prices_the_losses_the_scenario_set_reports(gate):
+    """The encoder's loss model is problem/'s, not merely consistent with itself."""
+    assert not gate["loss_model"], gate["loss_model"]
 
 
 def test_the_penalty_block_is_exactly_zero_at_every_witness(gate):
