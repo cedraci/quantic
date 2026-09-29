@@ -166,8 +166,9 @@ def test_the_reference_breakdown_is_untouched_when_nothing_was_approximated():
     assert reference_breakdown(enc, inst.witness) == evaluate(inst, inst.witness)
 
 
-def _risk_that_matters():
-    """Three buckets, six scenarios, and a lam at which risk is 44% of the total."""
+def _risk_that_matters(lam=0.01):
+    """Three buckets and six scenarios. At the default lam risk is 44% of the
+    total at the witness; at ``lam=1.0`` it is 99%."""
     rng = np.random.default_rng(7)
     scenarios = ScenarioSet(
         returns=rng.normal(scale=0.01, size=(6, 3, 2)),
@@ -175,7 +176,7 @@ def _risk_that_matters():
     )
     return _instance(
         n_buckets=3, dials=Dials(cvar_risk=True),
-        risk=CVaRRisk(lam=0.01, alpha=0.9, scenarios=scenarios),
+        risk=CVaRRisk(lam=lam, alpha=0.9, scenarios=scenarios),
         witness=Schedule(lots=((2, 2, 0), (2, 2, 0))),
     )
 
@@ -233,3 +234,72 @@ def test_a_cvar_instance_with_no_risk_aversion_carries_no_cvar_penalty():
     enc = encode(inst, BinaryEncoding())
     assert enc.strengths.cvar == 0.0
     assert enc.gadget.resolution == 0.0
+
+
+def _risk_energy(enc, schedule):
+    zeta = enc.gadget.zeta.snap(optimal_zeta(enc.instance, schedule))
+    return enc.breakdown.risk.energy(encode_solution(enc, schedule, zeta=zeta))
+
+
+def test_no_single_cell_buys_more_risk_than_the_gadget_says_it_can():
+    """The bound the hard strengths are built on, checked against every pair.
+
+    Every schedule on the lot grid, feasible or not, against every schedule
+    that differs from it in one cell.
+    """
+    inst = _risk_that_matters(lam=1.0)
+    enc = encode(inst, BinaryEncoding())
+    bound = enc.gadget.risk_gain_bound(enc.layout)
+    grids = list(itertools.product(range(5), repeat=6))
+    rng = np.random.default_rng(0)
+    worst = 0.0
+    for pick in rng.choice(len(grids), size=300, replace=False):
+        base = np.array(grids[pick]).reshape(2, 3)
+        here = _risk_energy(enc, Schedule.from_array(base))
+        for i, t in itertools.product(range(2), range(3)):
+            for value in range(5):
+                if value == base[i, t]:
+                    continue
+                other = base.copy()
+                other[i, t] = value
+                there = _risk_energy(enc, Schedule.from_array(other))
+                worst = max(worst, abs(there - here))
+    assert 0.0 < worst <= bound
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
+def test_with_cvar_on_the_hard_strengths_cover_the_gain_in_risk(encoding):
+    """The M3a gate's last finding. Derived from an objective with the CVaR
+    penalty at zero, the hard strengths bounded the gain in spread and impact
+    and said nothing about risk -- so they did not move with ``lam`` at all."""
+    mild = encode(_risk_that_matters(lam=0.01), encoding)
+    averse = encode(_risk_that_matters(lam=1.0), encoding)
+    assert averse.strengths.full_liquidation > mild.strengths.full_liquidation
+    for enc in (mild, averse):
+        covered = enc.strengths.safety_factor * enc.gadget.risk_gain_bound(enc.layout)
+        assert enc.strengths.full_liquidation > covered
+        assert enc.strengths.validity == enc.strengths.full_liquidation
+        assert enc.strengths.cardinality == enc.strengths.full_liquidation
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS, ids=lambda e: e.name)
+def test_with_cvar_on_no_unsold_lot_is_cheaper_than_selling_it(encoding):
+    """The property the gate checks at one cell of one schedule, checked here at
+    every cell of every feasible schedule."""
+    inst = _risk_that_matters(lam=1.0)
+    enc = encode(inst, encoding)
+
+    def energy(schedule):
+        zeta = enc.gadget.zeta.snap(optimal_zeta(inst, schedule))
+        return enc.qubo.energy(encode_solution(enc, schedule, zeta=zeta))
+
+    cheaper = []
+    for schedule in _every_feasible_schedule():
+        full = energy(schedule)
+        grid = schedule.as_array()
+        for i, t in np.argwhere(grid > 0):
+            short = grid.copy()
+            short[i, t] -= 1
+            if energy(Schedule.from_array(short)) <= full:
+                cheaper.append((schedule.lots, (int(i), int(t))))
+    assert not cheaper, cheaper[:5]

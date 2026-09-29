@@ -193,7 +193,12 @@ def max_single_cell_gain(objective: Qubo, layout: Layout) -> float:
 
 
 def derive_penalties(
-    objective: Qubo, layout: Layout, *, safety_factor: float = 2.0, cvar: float = 0.0
+    objective: Qubo,
+    layout: Layout,
+    *,
+    safety_factor: float = 2.0,
+    cvar: float = 0.0,
+    risk_gain: float = 0.0,
 ) -> PenaltyStrengths:
     """Section 6.3's first strategy: a penalty larger than any gain it could buy.
 
@@ -206,13 +211,18 @@ def derive_penalties(
     The CVaR residual is the exception: it is in currency and moves in grid
     steps. Its strength is derived by the gadget, from the gadget's own
     trade-off, and is passed in as ``cvar`` rather than sharing the one above.
+
+    ``risk_gain`` is what one cell can buy in a risk term ``objective`` does
+    not couple the lot bits to -- the CVaR gadget's, whose coupling lives in
+    its penalty. It is added to the gain read off the matrix.
     """
     if safety_factor <= 1.0:
         raise ValueError(
             f"safety_factor must exceed 1, got {safety_factor}: at or below 1 the "
             "penalty only ties the gain it is meant to beat"
         )
-    strength = max(safety_factor * max_single_cell_gain(objective, layout), 1.0)
+    gain = max_single_cell_gain(objective, layout) + float(risk_gain)
+    strength = max(safety_factor * gain, 1.0)
     needs_min_participation = any(c.indicator_key is not None for c in layout.cells)
     return PenaltyStrengths(
         validity=strength,

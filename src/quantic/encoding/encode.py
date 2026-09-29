@@ -8,16 +8,14 @@ assembles that registry and then rebuilds every piece against it.
 
 The strength derivation needs two passes. The gadget's *keys* depend only on
 the instance and the bit budget, never on a strength, so the gadget is built
-once at strength zero to fix the registry. The hard constraints' strengths are
-derived from the objective expanded against that provisional gadget; the CVaR
-strength is derived by the gadget from its own trade-off, which the objective
-does not enter. Then everything is rebuilt at the derived strengths. Both
-passes are pure, so the result is deterministic.
-
-What this leaves open: the objective the hard strengths are derived from has
-the CVaR penalty at zero, so no lot bit is coupled to the risk term in it.
-With D3 on, the hard strengths therefore bound the gain in spread and impact
-and not the gain in risk.
+once at strength zero to fix the registry. The CVaR strength is derived by the
+gadget from its own trade-off, which the objective does not enter. The hard
+constraints' strengths are derived from the objective expanded against the
+provisional gadget -- which gives the gain in spread and impact -- plus the
+gadget's own bound on the gain in risk, because at strength zero no lot bit is
+coupled to the risk term and the matrix has nothing to say about it. Then
+everything is rebuilt at the derived strengths. Both passes are pure, so the
+result is deterministic.
 """
 
 from __future__ import annotations
@@ -105,19 +103,18 @@ def encode(
     )
     registry = _assemble(instance, layout, provisional)
     probe = expand_objective(instance, layout, registry, gadget=provisional)
-    strengths = derive_penalties(
-        probe.total, layout, safety_factor=safety_factor,
-        cvar=(
-            provisional.derived_penalty(safety_factor=safety_factor)
-            if needs_gadget
-            else 0.0
-        ),
-    )
-
     gadget = (
-        dataclasses.replace(provisional, penalty=strengths.cvar)
+        dataclasses.replace(
+            provisional,
+            penalty=provisional.derived_penalty(safety_factor=safety_factor),
+        )
         if needs_gadget
         else None
+    )
+    strengths = derive_penalties(
+        probe.total, layout, safety_factor=safety_factor,
+        cvar=0.0 if gadget is None else gadget.penalty,
+        risk_gain=0.0 if gadget is None else gadget.risk_gain_bound(layout),
     )
     breakdown = expand_objective(instance, layout, registry, gadget=gadget)
     penalties = expand_penalties(instance, layout, registry, strengths)

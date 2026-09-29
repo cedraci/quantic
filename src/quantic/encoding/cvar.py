@@ -135,9 +135,44 @@ class CVaRGadget:
         quadratically, so buying accuracy costs only bits.
         """
         half = self.zeta.step / 2.0
-        cost_gap = self.lam * half / (1.0 - self.alpha)
         floor = self.penalty * float(self.n_scenarios) * half * half
-        return float(cost_gap + floor)
+        return float(self.cost_gap + floor)
+
+    @property
+    def cost_gap(self) -> float:
+        """What half a grid step is worth in the cost term.
+
+        It is also the most that snapping ``zeta`` to the grid can add:
+        Rockafellar-Uryasev is convex in ``zeta`` with a slope between
+        ``-alpha / (1 - alpha)`` and ``1``, and neither exceeds
+        ``1 / (1 - alpha)``.
+        """
+        return float(self.lam * (self.zeta.step / 2.0) / (1.0 - self.alpha))
+
+    def risk_gain_bound(self, layout: Layout) -> float:
+        """The most that changing one cell can buy in the encoded risk term.
+
+        The hard constraints have to out-charge this, and it cannot be read off
+        the matrix the way the other terms' gains are: the rows that couple a
+        lot bit to the risk term are the penalty's, and their absolute sum
+        bounds what an arbitrary auxiliary state could yield, which is millions
+        where the risk itself is tens.
+
+        It is bounded from the problem instead. CVaR is monotone and
+        translation-equivariant, so it moves by no more than the largest change
+        in any one scenario's loss; and changing cell ``(i, t)`` moves every
+        holding from ``t`` on, so that change is the cell's reach times the
+        tail sum of its coefficients. The encoded value then sits within
+        ``resolution`` of continuous Rockafellar-Uryasev on each side of the
+        comparison, and within ``cost_gap`` of it for the snapped ``zeta``.
+        """
+        tails = np.cumsum(self.loss_coefficients[:, :, ::-1], axis=2)[:, :, ::-1]
+        swing = 0.0
+        for plan in layout.cells:
+            reach = float(max(plan.values) - min(plan.values))
+            steepest = float(np.abs(tails[:, plan.asset, plan.bucket]).max())
+            swing = max(swing, reach * steepest)
+        return float(self.lam * swing + 2.0 * self.resolution + self.cost_gap)
 
     def derived_penalty(self, *, safety_factor: float) -> float:
         """The strength at which tracking ``L_s - zeta`` beats cheating on it.
