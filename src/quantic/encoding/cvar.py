@@ -25,7 +25,12 @@ assertions; no tolerance on the correctness claim.
 
 ``u`` and ``g`` share ``zeta``'s step, so ``u - g`` ranges over integer
 multiples of one step and the best auxiliaries are closed-form rather than a
-search.
+search. There are two notions of best, and they differ.
+:meth:`CVaRGadget.optimal_aux` minimises the penalty: it is the canonical
+encoding of a schedule, and the one ``resolution`` is stated at.
+:meth:`CVaRGadget.cheapest_aux` minimises the energy, cost included: it is what
+the QUBO's own minimum takes, and what anything claiming to have found that
+minimum has to use.
 """
 
 from __future__ import annotations
@@ -175,13 +180,21 @@ class CVaRGadget:
         return float(self.lam * swing + 2.0 * self.resolution + self.cost_gap)
 
     def derived_penalty(self, *, safety_factor: float) -> float:
-        """The strength at which tracking ``L_s - zeta`` beats cheating on it.
+        """The strength that holds ``u_s`` to within a step of ``L_s - zeta``.
 
         The residual is in currency and moves in grid steps, not in units, so
         it cannot share the strength of the integer squares. Dropping ``u_s``
-        one step below its target saves ``lam * w_s * step / (1 - alpha)`` in
-        cost and adds ``P * step**2`` in penalty; the strength has to win that
-        trade for the heaviest scenario, by the safety factor and no more.
+        a whole step below a target that sits on the grid saves ``lam * w_s *
+        step / (1 - alpha)`` in cost and adds ``P * step**2`` in penalty; the
+        strength wins that trade for the heaviest scenario, by the safety
+        factor and no more.
+
+        A target is rarely on the grid, and then the trade is closer. The
+        energy's own minimum sits at the grid point nearest ``target - c_s /
+        (2 * P)`` rather than nearest ``target`` -- up to ``step / (2 *
+        safety_factor)`` lower -- so it can be one step below the nearest
+        point and is never further. That is the difference between
+        :meth:`cheapest_aux` and :meth:`optimal_aux`.
 
         No more, because the residual is never zero: each loss sits up to half
         a step off the grid, and the penalty charges that whatever the
@@ -220,6 +233,39 @@ class CVaRGadget:
             else:
                 bits.update(self.u[s].encode(0.0))
                 bits.update(self.g[s].encode(-target))
+        return bits
+
+    def cheapest_aux(self, losses: np.ndarray, zeta: float) -> dict[VarKey, int]:
+        """The energy-minimising auxiliaries, in closed form.
+
+        For a fixed schedule and ``zeta`` the scenarios separate, and within
+        one only ``u - g`` and ``u`` matter, so ``u`` is as small as the
+        difference allows. With the difference at ``m`` steps the scenario
+        costs ``c * step * max(m, 0) + P * (m * step - target)**2``, convex on
+        each side of zero: the best non-negative ``m`` is the one nearest
+        ``(target - c / (2 * P)) / step``, the best non-positive one is
+        nearest ``target / step``, and the cheaper of the two wins.
+        """
+        top = 2**self.zeta.n_bits - 1
+        step = self.zeta.step
+        weights = np.asarray(self.weights, dtype=float)
+        bits: dict[VarKey, int] = {}
+        for s, target in enumerate(np.asarray(losses, dtype=float) - float(zeta)):
+            per_step = self.lam * float(weights[s]) / (1.0 - self.alpha) * step
+            if self.penalty == 0.0:
+                level = 0
+            else:
+                pull = per_step / (2.0 * self.penalty * step * step)
+
+                def energy(m: int, per_step=per_step, target=target) -> float:
+                    gap = m * step - target
+                    return per_step * max(m, 0) + self.penalty * gap * gap
+
+                above = int(min(max(np.floor(target / step - pull + 0.5), 0), top))
+                below = int(min(max(np.floor(target / step + 0.5), -top), 0))
+                level = above if energy(above) < energy(below) else below
+            bits.update(self.u[s].encode(step * max(level, 0)))
+            bits.update(self.g[s].encode(step * max(-level, 0)))
         return bits
 
     def encoded_cvar(self, losses: np.ndarray, zeta: float, aux) -> float:
