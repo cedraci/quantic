@@ -155,7 +155,7 @@ class CVaRGadget:
         return float(self.lam * (self.zeta.step / 2.0) / (1.0 - self.alpha))
 
     def risk_gain_bound(self, layout: Layout) -> float:
-        """The most that changing one cell can buy in the encoded risk term.
+        """The most that one unit of a hard constraint can buy in the risk term.
 
         The hard constraints have to out-charge this, and it cannot be read off
         the matrix the way the other terms' gains are: the rows that couple a
@@ -165,18 +165,29 @@ class CVaRGadget:
 
         It is bounded from the problem instead. CVaR is monotone and
         translation-equivariant, so it moves by no more than the largest change
-        in any one scenario's loss; and changing cell ``(i, t)`` moves every
-        holding from ``t`` on, so that change is the cell's reach times the
-        tail sum of its coefficients. The encoded value then sits within
+        in any one scenario's loss. The encoded value then sits within
         ``resolution`` of continuous Rockafellar-Uryasev on each side of the
         comparison, and within ``cost_gap`` of it for the snapped ``zeta``.
+
+        What a unit of violation can do to a loss depends on the constraint.
+        Leaving a lot unsold changes one cell, which moves every holding from
+        its bucket on: the tail sum of the coefficients. Trading a name in a
+        bucket where cardinality forbids it moves lots *between* two buckets
+        of that name, which moves only the holdings in between: a partial sum,
+        and a partial sum can be twice the largest tail sum, because the
+        buckets after the second -- whose coefficients the tail sum nets off
+        -- are not touched. Every tail sum is a partial sum that runs to the
+        end, so the largest partial sum covers both.
         """
-        tails = np.cumsum(self.loss_coefficients[:, :, ::-1], axis=2)[:, :, ::-1]
-        swing = 0.0
+        ends = np.cumsum(self.loss_coefficients, axis=2)             # (S, N, T)
+        ends = np.concatenate([np.zeros_like(ends[:, :, :1]), ends], axis=2)
+        widest = np.abs(ends[:, :, :, None] - ends[:, :, None, :]).max(axis=(0, 2, 3))
+
+        reach = np.zeros(layout.n_assets)
         for plan in layout.cells:
-            reach = float(max(plan.values) - min(plan.values))
-            steepest = float(np.abs(tails[:, plan.asset, plan.bucket]).max())
-            swing = max(swing, reach * steepest)
+            span = float(max(plan.values) - min(plan.values))
+            reach[plan.asset] = max(reach[plan.asset], span)
+        swing = float((reach * widest).max())
         return float(self.lam * swing + 2.0 * self.resolution + self.cost_gap)
 
     def derived_penalty(self, *, safety_factor: float) -> float:
