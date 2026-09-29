@@ -98,16 +98,6 @@ class Grid:
         return self.lo + self.step * float(level)
 
 
-def _grid_for(lo: float, step: float, span: float, prefix: VarKey) -> Grid:
-    """The smallest grid at ``step`` starting at ``lo`` that reaches ``lo + span``."""
-    levels = max(int(np.ceil(max(span, 0.0) / step)), 1)
-    n_bits = max(int(levels).bit_length(), 1)
-    return Grid(
-        lo=lo, step=step, n_bits=n_bits,
-        keys=tuple((*prefix, b) for b in range(n_bits)),
-    )
-
-
 @dataclass(frozen=True, eq=False)
 class CVaRGadget:
     """The Rockafellar-Uryasev expansion, and the function it actually implements."""
@@ -189,6 +179,13 @@ class CVaRGadget:
         return float(cost + self.penalty * residual)
 
 
+def _aux_grid(step: float, n_bits: int, prefix: VarKey) -> Grid:
+    return Grid(
+        lo=0.0, step=step, n_bits=n_bits,
+        keys=tuple((*prefix, b) for b in range(n_bits)),
+    )
+
+
 def build_cvar_gadget(
     instance: Instance, layout: Layout, *, n_zeta_bits: int = 8, penalty: float
 ) -> CVaRGadget:
@@ -226,12 +223,11 @@ def build_cvar_gadget(
         keys=tuple(("zeta", b) for b in range(n_zeta_bits)),
     )
     n_scenarios = int(returns.shape[0])
-    u = tuple(
-        _grid_for(0.0, step, upper - lower, ("u", s)) for s in range(n_scenarios)
-    )
-    g = tuple(
-        _grid_for(0.0, step, upper - lower, ("g", s)) for s in range(n_scenarios)
-    )
+    # u and g share zeta's step and must reach zeta's span, so they take
+    # zeta's width. Recovering the width from span / step instead lets that
+    # quotient round to a hair above 2**n - 1 and cost every grid a bit.
+    u = tuple(_aux_grid(step, n_zeta_bits, ("u", s)) for s in range(n_scenarios))
+    g = tuple(_aux_grid(step, n_zeta_bits, ("g", s)) for s in range(n_scenarios))
     return CVaRGadget(
         zeta=zeta, u=u, g=g, alpha=risk.alpha, lam=risk.lam,
         weights=np.asarray(risk.scenarios.weights, dtype=float),

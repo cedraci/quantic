@@ -183,3 +183,19 @@ def test_expand_objective_still_refuses_cvar_without_a_gadget():
     layout = plan_layout(inst, BinaryEncoding())
     with pytest.raises(ValueError, match="gadget"):
         expand_objective(inst, layout, layout.registry)
+
+
+def test_the_auxiliary_grids_are_as_wide_as_zeta_whatever_the_rounding():
+    """``u`` and ``g`` share zeta's step and its span, so they share its width.
+
+    Sized by dividing the span by the step, they came out one bit wider
+    whenever that quotient rounded to a hair above ``2**n - 1`` -- on two of
+    the ladder's 32 CVaR instances, thirty variables each in the budget.
+    """
+    widths = set()
+    for seed in range(200):
+        inst = _instance(scenarios=_scenarios(seed=seed))
+        layout = plan_layout(inst, BinaryEncoding())
+        gadget = build_cvar_gadget(inst, layout, n_zeta_bits=8, penalty=1.0)
+        widths |= {grid.n_bits for grid in gadget.u + gadget.g}
+    assert widths == {8}
