@@ -99,8 +99,9 @@ def gate(ladder):
         name: {}
         for name in (
             "encodes", "total_energy", "term_energy", "loss_model",
-            "penalty_zero", "one_lot", "round_trip", "substitution",
-            "cvar_resolution", "dynamic_range", "describe",
+            "gadget_inputs", "tail_energy", "penalty_zero", "one_lot",
+            "round_trip", "substitution", "cvar_resolution", "dynamic_range",
+            "describe",
         )
     }
 
@@ -120,11 +121,9 @@ def gate(ladder):
         if energy != pytest.approx(expected, rel=REL):
             findings["total_energy"][tag] = (energy, expected)
 
-        # With D3 on the total is mostly the gadget's penalty, so a relative
-        # tolerance on it resolves whole currency units at T3 -- the scale of
-        # the impact terms themselves. The three terms the gadget does not
-        # touch are therefore compared on their own under every risk spec;
-        # only the risk term has no continuous counterpart to equal.
+        # The three terms the gadget does not touch are compared on their own
+        # under every risk spec; only the CVaR risk term has no continuous
+        # counterpart to equal.
         reference = reference_breakdown(encoded, instance.witness, zeta=zeta)
         terms = [
             ("spread", encoded.breakdown.spread, reference.spread_cost),
@@ -141,16 +140,67 @@ def gate(ladder):
                 findings["term_energy"][(*tag, name)] = (got, want)
 
         if encoded.gadget is not None:
+            gadget, risk = encoded.gadget, instance.risk
+
             # Every CVaR check below is stated against the gadget's own
             # losses, so a gadget pricing the wrong losses would agree with
-            # itself throughout. This is the one tie back to problem/.
-            priced = encoded.gadget.losses_from(
-                instance, encoded.layout, instance.witness
+            # itself throughout. This is the tie back to problem/. A loss is
+            # a coefficient times a holding, so the witness alone is blind to
+            # every cell it no longer holds; the schedule that sells nothing
+            # holds every cell.
+            unsold = Schedule.from_array(np.zeros_like(instance.witness.as_array()))
+            for name, schedule in (("witness", instance.witness), ("unsold", unsold)):
+                priced = gadget.losses_from(instance, encoded.layout, schedule)
+                reported = risk.scenarios.losses(instance, schedule)
+                scale = float(np.abs(reported).max())
+                if not np.allclose(priced, reported, rtol=REL, atol=REL * scale):
+                    findings["loss_model"][(*tag, name)] = float(
+                        np.abs(priced - reported).max()
+                    )
+
+            # The gadget agrees with itself whatever it was built from, so
+            # what it was built from is checked against the instance, and its
+            # strength against design section 8's trade written out here
+            # rather than against the method that computes it.
+            weights = np.asarray(risk.scenarios.weights, dtype=float)
+            strength = (
+                encoded.strengths.safety_factor * risk.lam * float(weights.max())
+                / ((1.0 - risk.alpha) * gadget.zeta.step)
             )
-            reported = instance.risk.scenarios.losses(instance, instance.witness)
-            scale = float(np.abs(reported).max())
-            if not np.allclose(priced, reported, rtol=REL, atol=REL * scale):
-                findings["loss_model"][tag] = float(np.abs(priced - reported).max())
+            wrong = [
+                name for name, ok in (
+                    ("lam", gadget.lam == risk.lam),
+                    ("alpha", gadget.alpha == risk.alpha),
+                    ("weights", np.array_equal(gadget.weights, weights)),
+                    ("penalty", gadget.penalty == pytest.approx(strength, rel=1e-12)),
+                    ("strengths.cvar", encoded.strengths.cvar == gadget.penalty),
+                ) if not ok
+            ]
+            if wrong:
+                findings["gadget_inputs"][tag] = wrong
+
+            # At the optimal zeta with alpha at 0.95 and fifteen scenarios the
+            # tail holds one scenario or none, so no u bit is set and the
+            # energy above never touches the excess term. At the smallest loss
+            # every scenario is in the tail.
+            losses = gadget.losses_from(instance, encoded.layout, instance.witness)
+            low = gadget.zeta.snap(float(losses.min()))
+            in_the_tail = encoded.qubo.energy(
+                encode_solution(encoded, instance.witness, zeta=low)
+            )
+            expected_there = _expected_total(encoded, instance.witness, low)
+            if in_the_tail != pytest.approx(expected_there, rel=REL):
+                findings["tail_energy"][tag] = (in_the_tail, expected_there)
+            declared = gadget.encoded_cvar(
+                losses, low, gadget.optimal_aux(losses, low)
+            )
+            continuous = risk.lam * cvar_of(
+                risk.scenarios, instance, instance.witness, alpha=risk.alpha, zeta=low,
+            )
+            if abs(declared - continuous) > gadget.resolution:
+                findings["cvar_resolution"][(*tag, "in the tail")] = (
+                    abs(declared - continuous), gadget.resolution
+                )
 
         # Algebraically the penalty residual is exactly zero at a feasible
         # point. Qubo.energy evaluates it as a dense z'Qz product, so what
@@ -167,15 +217,16 @@ def gate(ladder):
             findings["penalty_zero"][tag] = (paid, floor)
 
         if not (instance.dials.discrete_participation or instance.dials.block_trades):
-            grid = instance.witness.as_array().copy()
-            cell = np.argwhere(grid > 0)[0]
-            grid[cell[0], cell[1]] -= 1
-            short = Schedule.from_array(grid)
-            bad = encoded.qubo.energy(
-                encode_solution(encoded, short, zeta=_zeta_for(encoded, short))
-            )
-            if not bad > energy:
-                findings["one_lot"][tag] = (bad, energy)
+            held = instance.witness.as_array()
+            for i, t in np.argwhere(held > 0):
+                grid = held.copy()
+                grid[i, t] -= 1
+                short = Schedule.from_array(grid)
+                bad = encoded.qubo.energy(
+                    encode_solution(encoded, short, zeta=_zeta_for(encoded, short))
+                )
+                if not bad > energy:
+                    findings["one_lot"][(*tag, int(i), int(t))] = (bad, energy)
 
         sample = decode(encoded, bits)
         if sample.schedule != instance.witness or sample.classification != "feasible":
@@ -251,6 +302,17 @@ def test_each_objective_term_matches_on_its_own(gate):
 def test_the_gadget_prices_the_losses_the_scenario_set_reports(gate):
     """The encoder's loss model is problem/'s, not merely consistent with itself."""
     assert not gate["loss_model"], gate["loss_model"]
+
+
+def test_the_gadget_is_built_from_the_instance_at_the_derived_strength(gate):
+    """Its risk aversion, its confidence level, its weights, and design section
+    8's strength -- none of which the gadget's agreement with itself can show."""
+    assert not gate["gadget_inputs"], gate["gadget_inputs"]
+
+
+def test_the_energy_equals_the_reference_with_every_scenario_in_the_tail(gate):
+    """Energy equality again, at a zeta that puts the excess term to work."""
+    assert not gate["tail_energy"], gate["tail_energy"]
 
 
 def test_the_penalty_block_is_exactly_zero_at_every_witness(gate):
