@@ -1,6 +1,6 @@
 # M3b — Exact Baseline and the Parent Gate
 
-**Status:** Design approved, pending implementation plan
+**Status:** Design approved; plan at `docs/superpowers/plans/2026-09-30-m3b-exact-baseline.md`
 **Date:** 2026-09-29
 **Builds on:** `2026-09-25-m3a-encoding-design.md`, `2026-09-29-m3a-gate-result.md`;
 parent spec `2026-09-22-quantum-liquidation-lvar-design.md` §7.1, §7.3, §10.2, §14
@@ -199,7 +199,13 @@ samplers add it with the first solver that does.
 @dataclass(frozen=True)
 class LotGrid:
     values: tuple[tuple[tuple[int, ...], ...], ...]   # [i][t] -> admissible lots
+    initial_lots: tuple[int, ...]
     cardinality: int | None                           # names per bucket, or None
+
+    def rows(self, i: int) -> tuple[tuple[int, ...], ...]:
+        """Every way asset ``i`` can sell its whole position."""
+
+    def n_candidates(self) -> int: ...
 
     def schedules(self) -> Iterator[Schedule]:
         """Every schedule that liquidates in full, on admissible values."""
@@ -211,7 +217,7 @@ class LotGrid:
 |---|---|
 | `max_lots_per_bucket`, `initial_lots` | a cell ranges over `0 .. min(cap, X_i)` |
 | `MinParticipation` | values in `1 .. min_lots − 1` are removed |
-| `BlockTrades` | a block cell takes `0` or the block size |
+| `BlockTrades` | a block cell takes `0` or the block size; `0` alone if the block is below the venue minimum |
 | `Cardinality` | not a cell property; carried as `cardinality` |
 | `FullLiquidation` | enforced by `schedules()`, row by row |
 
@@ -239,14 +245,21 @@ def brute_force(
 ) -> Result
 ```
 
-`CellCost` is `(i, t, lots) -> float`, the spread and temporary impact of one
-cell. `None` means the true cost, from `evaluate`. Passing the table of an
-`ApproximandReport` gives the optimum of the function the encoder declares it
-implements, which M3a's hand-off asks for and which M4's comparison at T1 under
-the binary encoding will need.
+`CellCost` is `(i, t, lots) -> float`, the temporary impact of one cell. `None`
+means the true cost, from `evaluate`. Spread is linear and exact under every
+encoding, so no table replaces it. `ApproximandReport.cell_cost` — added to
+`encoding/expand.py` by this milestone — is such a table, and passing it gives
+the optimum of the function the encoder declares it implements, which M3a's
+hand-off asks for and which M4's comparison at T1 under the binary encoding
+will need.
+
+`solvers/classical/scoring.py` holds `score(instance, schedule, cell_cost=None)`,
+the one place either method calls the evaluator from. With a table it replaces
+one field of `evaluate`'s output, as `reference_breakdown` does.
 
 Under CVaR the schedule's `ζ` is `optimal_zeta`. The bracket has zero width:
-both ends are the same evaluation.
+both ends are the same evaluation. An instance with no feasible schedule
+returns `INFEASIBLE` and does not raise.
 
 It refuses a grid of more than `10^7` schedules rather than run for hours.
 T0's largest has `4^12 ≈ 1.7 × 10^7` before full liquidation and 38,440 after.
@@ -254,6 +267,13 @@ T0's largest has `4^12 ≈ 1.7 × 10^7` before full liquidation and 38,440 after
 ### 7.2 `exact_pwl_milp`
 
 Through `scipy.optimize.milp`, which is HiGHS. No new dependency.
+
+```python
+def exact_pwl_milp(
+    instance: Instance, *, budget: Budget | None = None,
+    cell_cost: CellCost | None = None,
+) -> Result
+```
 
 **Variables.** `y[i,t,k] ∈ {0,1}` for each admissible value `k` of cell `(i,t)`;
 under CVaR a free continuous `ζ` and one `u_s ≥ 0` per scenario; under variance
@@ -274,7 +294,7 @@ Minimum participation and blocks are already in the grid.
 
 | term | form |
 |---|---|
-| spread, temporary impact | `Σ c[i,t,k] · y[i,t,k]`, exact for any cost table |
+| spread, temporary impact | `Σ c[i,t,k] · y[i,t,k]`, exact for any cost table. `c` is read off the evaluator: what it charges a schedule that trades in that cell alone |
 | permanent impact | a constant |
 | CVaR | `λ (ζ + Σ_s w_s u_s / (1 − α))` |
 | variance | `θ`, bounded below by cuts |
@@ -292,8 +312,19 @@ on every feasible schedule of a T0 instance.
 4. Otherwise add `θ ≥ v(x̂) + ∇v(x̂)' (x − x̂)` and return to 1.
 
 `v` is convex, so every cut is valid everywhere and the MILP's value is a lower
-bound at every round. The cut at `x̂` is tight at `x̂`, so no schedule is
-returned twice with a gap, and the grid is finite.
+bound at every round. The cut at `x̂` is tight at `x̂`, and the grid is finite.
+
+The loop also stops when the program returns a schedule it has already been
+cut at. HiGHS satisfies a cut to its feasibility tolerance of `1e-7`, which is
+looser than the test in step 3, so without this the same schedule comes back
+with the same gap and the same cut is added for ever. The prototype did exactly
+that on a three-bucket instance with cardinality.
+
+**Presolve.** HiGHS's presolve fails outright — "Solve error", no solution —
+on some small programs once they carry cuts; `T0-D1+D2` at the fourth round is
+one. The same program solves with presolve off. A round that fails is retried
+without presolve, and `Result.detail` counts the retries. A round that fails
+both ways raises.
 
 **The bracket.** `lower` is the MILP's dual bound at the last round. `upper` is
 `evaluate` at the schedule it returned. `mip_rel_gap` is set to zero; the
@@ -311,8 +342,10 @@ class QuboMinimum:
     bits: np.ndarray          # the full vector, auxiliaries included
     energy: float
     scope: str                # EVERY_STATE | DECODABLE
-    n_states: int             # how many were examined
-    n_ties: int               # states within round-off of the minimum
+    n_states: int             # states of the bits outside the gadget
+    n_ties: int               # of those, how many reach the minimum
+    n_scanned: int            # how many went through the zeta scan
+    widest_window: int        # the most zeta levels any one state needed
 
 
 def qubo_minimum(encoded: EncodedInstance) -> QuboMinimum
@@ -322,8 +355,9 @@ def qubo_minimum(encoded: EncodedInstance) -> QuboMinimum
 slack.
 
 - `n ≤ 28`: every one of the `2^n` states. `EVERY_STATE`.
-- `n > 28`: every state that decodes — each cell on a value the layout admits,
-  feasible or not, with every setting of the slack bits. `DECODABLE`.
+- `n > 28`: every state that decodes — each cell on the canonical encoding of
+  a value the layout admits, feasible or not, with every setting of the slack
+  bits. `DECODABLE`.
 
 **Without a gadget** the energy of a state is `z' Q z`. The bits are split into
 two halves so that one half's energy is computed once and the cross term is a
@@ -344,14 +378,23 @@ continuous Rockafellar-Uryasev at `ζ_j`. With `c_s = λ w_s δ / (1 − α)` th
 of one step of `u_s`, and `P` the gadget's strength:
 
 ```
-−A ≤ e(j) ≤ B,    A = Σ_s c_s² / (4 P δ²),    B = Σ_s (c_s / 2 + P δ² / 4)
+e(j) ≥ −A,    A = Σ_s c_s² / (4 P δ²)
 ```
 
-The lower bound relaxes the step count to a real; the upper puts each `u_s` on
-the nearest grid point. `R` is convex in `j`, so the levels with
-`R(j) ≤ min R + A + B` form an interval, and no level outside it can hold the
-minimum of `G`. That interval is the candidate set. Both `A` and `B` scale with
-`δ`, as does the slope of `R`, so its length does not grow with the width.
+which relaxes each scenario's step count to a real and minimises. So
+`G(j) ≥ R(j) − A` at every level, whatever the state.
+
+A window of levels centred on the weighted quantile of the losses is scanned
+exactly. It is wide enough when, at each of its two edges, either the edge is
+the end of the grid or `R` there exceeds both `R` at the centre and the best
+charge found inside plus `A`. `R` is convex in `j`, so beyond an edge where it
+is rising it only rises further, and no level outside can hold the minimum. A
+state whose window fails the test is scanned again at twice the width.
+
+The test uses the charge actually found, not a bound on it, so it assumes
+nothing about the state: losses that fall outside the grid, as an oversold
+state's do, make the window grow and do not make the answer wrong. On the
+ladder a window of 129 levels was enough for every state at every width.
 
 **Pruning.** CVaR is at least the mean loss, so a state's energy is at least
 
@@ -360,8 +403,9 @@ costs + hard penalties + λ Σ_s w_s L_s − A
 ```
 
 which is linear in the state and costs one matrix product. Only states whose
-bound is below the incumbent go through the scan. The incumbent starts at the
-energy of the instance's witness.
+bound is at or below the energy of the instance's witness go through the scan.
+On the ladder those were the feasible schedules and almost nothing else:
+38,440 of `2^24` states on `T0-D3`.
 
 The vectorised closed form is a second implementation of `cheapest_aux`. The
 winning state is rebuilt through the production method and its energy checked
@@ -400,7 +444,10 @@ n_raw=300, n_target=15)`, T0 only. The ladder's fixture moves to a shared
 `tests/ladder.py` so both gates build the same instances.
 
 As in M3a, one pass collects findings per check and the named tests assert on
-them.
+them. The checks themselves are functions in `tests/solvers/gate.py`, so that
+the tests which put a defect in call the same code the gate does.
+
+In the prototype the whole gate ran in 72 s, and the T1 measurement in 46 s.
 
 **For each of the 16 instances:**
 
@@ -437,21 +484,26 @@ at `GATE_ZETA_BITS = 20` and the rest as they are:
 10. On the 16 T1 instances: `exact_pwl_milp` with a budget of 120 s each.
     Asserted to return `OPTIMAL` or `TIME_LIMIT` with `lower ≤ upper`. The
     statuses, brackets and wall times go into the result document. This is
-    `tests/solvers/test_t1_bracket.py`, under a `slow` marker the default run
-    deselects: sixteen budgets of 120 s are not part of the gate's wall time.
+    `tests/solvers/test_t1_bracket.py`. In the prototype all sixteen were
+    solved to `OPTIMAL`, the slowest in 24 s.
 
-**Mutation checks.** Each of these is put in by monkeypatch and the gate is
-watched failing, as M3a's second review required. The second column is the
-expectation; the result document records what each one did.
+**The gate, seen failing.** Each defect is put in by monkeypatch, in a test
+that stays in the suite, and the check named is asserted to report it:
 
-| defect | expected to fail |
-|---|---|
-| hard strengths scaled down until an infeasible state wins | check 5 |
-| the vectorised closed form uses `optimal_aux`'s rule | check 7 |
-| CVaR cells encoded at 8 bits | check 6, on five cells |
-| cardinality dropped from the MILP | check 1 |
-| a cut with the wrong sign | check 2 or 3 |
-| the MILP's cost table shifted on one cell | check 2 |
+| defect | reported by | where |
+|---|---|---|
+| hard strengths scaled down until they do not bind | check 5 | the gate, on `T0-none` |
+| CVaR cells encoded at 8 bits | check 6, on five cells and no others | the gate |
+| cardinality dropped from the MILP | check 1 | the gate, on `T0-D2` |
+| a cut with the wrong sign | any of checks 1 to 3 | the gate, on `T0-none` |
+| the MILP's cost table scaled | any of checks 1 to 3 | the gate, on `T0-D1` |
+| the closed form uses `optimal_aux`'s rule | the closed form against `cheapest_aux`, state by state | `test_qubo_minimum.py` |
+
+The last is not a gate check, and cannot be one. With `optimal_aux`'s rule the
+closed form overcharges the states where the two differ, and the winning state
+was not among them on the instance tried: the minimum and its energy came out
+the same. What pins the closed form is a unit test that compares it with the
+production method at every schedule of an instance, not only at the winner.
 
 ## 10. Deviations from the parent spec
 
@@ -469,25 +521,38 @@ expectation; the result document records what each one did.
 |---|---|
 | `solvers/base.py` | `Budget`, `Bracket`, `Result`, `Solver` |
 | `solvers/classical/lot_grid.py` | admissible values per cell; schedule enumeration |
+| `solvers/classical/scoring.py` | `CellCost`, `score` — the one call into the evaluator |
 | `solvers/classical/brute_force.py` | the optimum by enumeration |
-| `solvers/classical/exact_pwl_milp.py` | the MILP and the outer-approximation loop |
+| `solvers/classical/milp_model.py` | the program's pieces: columns, costs, the loss model, the gradient, the rows |
+| `solvers/classical/exact_pwl_milp.py` | the solve loop, the outer approximation, the bracket |
+| `solvers/classical/gadget_minimum.py` | the gadget's charge, minimised over `ζ` and the auxiliaries |
 | `solvers/classical/qubo_minimum.py` | the exact minimum of an encoded instance |
+| `encoding/expand.py` | gains `ApproximandReport.cell_cost` |
 | `tests/ladder.py` | the gate ladder, shared by M3a and M3b |
-| `tests/solvers/test_m3b_gate.py` | the gate |
-| `tests/solvers/test_t1_bracket.py` | the T1 measurement, marked `slow` |
-| `pyproject.toml` | the `forbidden` import contract; the `slow` marker |
+| `tests/solvers/instances.py` | small instances the solver tests share |
+| `tests/solvers/gate.py` | the gate's checks, as functions |
+| `tests/solvers/test_m3b_gate.py` | the gate, and the gate seen failing |
+| `tests/solvers/test_t1_bracket.py` | the T1 measurement |
+| `tests/solvers/report.py` | prints the result document's tables |
+| `pyproject.toml` | two `forbidden` import contracts |
 
 `solvers/` sits above `encoding/` in the layer contract. `qubo_minimum` imports
-`encoding/`; `lot_grid`, `brute_force` and `exact_pwl_milp` do not, and a test
-asserts it.
+`encoding/`, as does `gadget_minimum`; `base`, `lot_grid`, `scoring`,
+`brute_force`, `milp_model` and `exact_pwl_milp` do not, and the second import
+contract enforces it.
+
+`milp_model` and `gadget_minimum` are split out of the modules §7.2 and §7.3
+describe. Each holds claims about the objective that can be tested against the
+evaluator, or against `CVaRGadget`, before any search runs.
 
 ## 12. Risks
 
 | Risk | Mitigation |
 |---|---|
-| The gate takes too long | The split enumeration and the pruning of §7.3. The plan carries a target of 30 minutes for the whole gate on the 64 GB machine, and measures before it optimises. |
-| The MILP does not finish at T1 | Recorded, not gated. If it does not, M4 inherits a measured fact instead of an assumption. |
-| The candidate interval is long where `R` is flat | Its length is reported per case. A flat `R` needs the tail weight to equal `1 − α` exactly, which fifteen clustered weights do not give. |
+| The gate takes too long | The split enumeration and the pruning of §7.3. Measured in the prototype at 72 s on the 64 GB machine; `2^28` states take under 3 s. |
+| The MILP does not finish at T1 | Recorded, not gated. In the prototype every T1 instance was solved to optimality, the slowest in 24 s, none in more than 44 rounds. |
+| HiGHS returns a wrong answer without saying so | At T0 enumeration would disagree. At T1 nothing checks the lower bound; the upper is the evaluator's and the schedule is classified. |
+| The window of levels is long where `R` is flat | Its width is reported per case. A flat `R` needs the tail weight to equal `1 − α` exactly, which fifteen clustered weights do not give. |
 | A future ladder has a smaller gap than 20 bits resolves | The gate would fail on check 6 and say which cell. The width is a named constant. |
 | Round-off at 20 bits hides a real discrepancy | Check 7's bound is three orders below the smallest gap, and checks 2 and 6 compare `evaluate` with `evaluate`. |
 
