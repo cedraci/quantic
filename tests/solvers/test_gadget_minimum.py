@@ -79,12 +79,13 @@ def test_the_auxiliaries_are_the_cheapest_and_not_the_canonical(monkeypatch):
 
 
 @pytest.mark.parametrize("shift", [-3.0, -1.0, 1.0, 3.0])
-def test_losses_outside_the_grid_widen_the_scan_and_do_not_break_it(shift):
+def test_losses_outside_the_grid_widen_the_scan_and_do_not_break_it(shift, monkeypatch):
     """An oversold state's losses need not lie where ``zeta`` can reach.
 
     The grid is built to hold every loss a schedule inside the position can
     produce. The enumeration also visits states that are not such schedules.
     """
+    monkeypatch.setattr(module, "_FIRST_WINDOW", 1)
     inst = cvar()
     enc = encode(inst, BinaryEncoding(), n_zeta_bits=5)
     gadget = enc.gadget
@@ -100,8 +101,17 @@ def test_losses_outside_the_grid_widen_the_scan_and_do_not_break_it(shift):
             charges.append(gadget.encoded_cvar(row, zeta, gadget.cheapest_aux(row, zeta)))
         expected.append(min(charges))
 
-    charge, _, _ = GadgetMinimiser(enc).minimise(losses)
+    mine = GadgetMinimiser(enc)
+    charge, level, widest = mine.minimise(losses)
     assert charge == pytest.approx(np.array(expected), rel=REL)
+    if shift != 1.0:  # at +1 span the first window already brackets the minimum
+        assert widest > 2 * module._FIRST_WINDOW + 1  # the window grew
+
+    every = np.tile(np.arange(mine.top + 1, dtype=float), (losses.shape[0], 1))
+    exhaustive = mine.charge(losses, every)
+    assert charge == pytest.approx(exhaustive.min(axis=1), rel=REL)
+    at = exhaustive[np.arange(losses.shape[0]), level.astype(int)]
+    assert at == pytest.approx(charge, rel=REL)
 
 
 def test_a_window_that_starts_at_one_level_reaches_the_same_minimum(monkeypatch):
