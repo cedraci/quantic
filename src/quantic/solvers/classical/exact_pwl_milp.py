@@ -152,6 +152,13 @@ def exact_pwl_milp(
             presolve_retries += 1
             solved = milp(**program, options={**options, "presolve": False})
 
+        if solved.status == _SCIPY_INFEASIBLE and (best is not None or n_cuts):
+            # Cuts only bound theta from below and theta has no upper bound, so
+            # a program that was feasible cannot become infeasible.
+            raise RuntimeError(
+                f"HiGHS reported {instance.instance_id} infeasible in round "
+                f"{rounds} after a feasible round: {solved.message}"
+            )
         if solved.status == _SCIPY_INFEASIBLE:
             return Result(
                 solver=NAME, status=INFEASIBLE, schedule=None, zeta=None,

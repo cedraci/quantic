@@ -156,6 +156,25 @@ def test_a_program_highs_cannot_solve_either_way_is_raised(monkeypatch):
         exact_pwl_milp(plain())
 
 
+def test_infeasible_after_a_feasible_round_is_raised_and_not_reported(monkeypatch):
+    """Cuts only bound theta from below, so this is numerical trouble, not the instance."""
+    real = module.milp
+    calls = []
+
+    def infeasible_second_round(**kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return real(**kwargs)
+        return types.SimpleNamespace(
+            status=2, x=None, fun=None, message="infeasible", mip_dual_bound=None
+        )
+
+    monkeypatch.setattr(module, "milp", infeasible_second_round)
+    with pytest.raises(RuntimeError, match="infeasible"):
+        exact_pwl_milp(plain())
+    assert len(calls) == 2
+
+
 def test_a_cut_with_the_wrong_sign_cannot_pass_for_an_answer(monkeypatch):
     """The mutation the gate is asked to catch, at a size that runs in a test.
 

@@ -13,6 +13,7 @@ samplers of M4 add it with the first solver that does.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -61,6 +62,11 @@ class Bracket:
     upper: float
 
     def __post_init__(self) -> None:
+        if math.isnan(self.lower) or math.isnan(self.upper):
+            raise ValueError(
+                f"a bracket cannot have a NaN bound: lower={self.lower!r}, "
+                f"upper={self.upper!r}"
+            )
         slack = _BRACKET_RTOL * max(1.0, abs(self.upper))
         if self.lower > self.upper + slack:
             raise ValueError(

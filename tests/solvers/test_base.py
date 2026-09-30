@@ -52,6 +52,12 @@ def test_a_bracket_with_nothing_proven_yet_is_infinitely_wide():
     assert Bracket(lower=float("-inf"), upper=3.0).width == float("inf")
 
 
+@pytest.mark.parametrize("lower, upper", [(float("nan"), 3.0), (1.0, float("nan"))])
+def test_a_bracket_refuses_a_bound_that_is_not_a_number(lower, upper):
+    with pytest.raises(ValueError, match="NaN"):
+        Bracket(lower=lower, upper=upper)
+
+
 @pytest.mark.parametrize("field", ["wall_clock_s", "max_samples"])
 @pytest.mark.parametrize("value", [0, -1])
 def test_a_budget_refuses_a_limit_that_allows_nothing(field, value):
