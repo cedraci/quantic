@@ -9,12 +9,12 @@
 
 ## Verdict
 
-**The gate passes.** On all sixteen T0 dial combinations two exact methods agree on the optimum, and under every encoding, with the CVaR cells at twenty zeta bits, the QUBO's minimum decodes to a feasible schedule whose true objective is that optimum. The report finds nothing on any check.
+**The gate passes.** On all sixteen T0 dial combinations two exact methods agree on the optimum, and under every encoding, with the CVaR cells at twenty zeta bits, the QUBO's minimum decodes to a feasible schedule whose true objective is that optimum. "Minimum" is over every state in 31 of the 48 cases, and over the states that decode in the other 17 (`DECODABLE`: one-hot 11, domain-wall 6; see below). Under the binary encoding all 16 combinations are proven over every state. The report finds nothing on any check.
 
 | what | result |
 |---|---|
 | gate | 18 of 18 pass |
-| T1 measurement | 6 of 6 pass |
+| T1 measurement | 6 of 6 tests pass; 16 of 16 instances OPTIMAL |
 | full suite | 1181 pass, 1 skipped, 0 fail |
 | `ruff check src tests` | clean (`All checks passed!`) |
 | `lint-imports` | 3 kept, 0 broken |
@@ -28,7 +28,7 @@ Machine: Windows 11 (10.0.26200), Intel Core i9-9900 at 3.10 GHz, 63.9 GB, Pytho
 
 ## What passing establishes, and what it does not
 
-**What is proven.** On sixteen combinations, under three encodings, with the CVaR cells encoded at twenty zeta bits (`GATE_ZETA_BITS`), the QUBO's minimum is a feasible schedule, and its true objective equals the optimum that brute force and the MILP agree on. The two exact methods agree to `1e-9` relative, both being `evaluate` at a schedule. The MILP's bracket closes on all sixteen (widest 4.4e-13 at T0). The QUBO's regret against the optimum is 0 in all 48 cases. The width is fixed, not derived from the instance, so the assertion could have failed.
+**What is proven.** On sixteen combinations, under three encodings, with the CVaR cells encoded at twenty zeta bits (`GATE_ZETA_BITS`), the QUBO's minimum -- over every state in 31 cases, over the states that decode in the other 17 (`DECODABLE`: one-hot 11, domain-wall 6; states that `decode` rejects are not examined, spec section 8) -- is a feasible schedule, and its true objective equals the optimum that brute force and the MILP agree on. Every one of the 16 combinations is proven over every state under the binary encoding. The two exact methods agree to `1e-9` relative, both being `evaluate` at a schedule. The MILP's bracket closes on all sixteen (widest 4.4e-13 at T0). The QUBO's regret against the optimum is 0 in all 48 cases. The width is fixed, not derived from the instance, so the assertion could have failed.
 
 **What is not proven: the study's own QUBOs.** The study runs at eight zeta bits, and there the QUBO's minimum is not the optimum on five cells. The regret of each, from the fourth table below:
 
@@ -175,7 +175,7 @@ All sixteen were solved to optimality. The slowest is `T1-D2+D4`, at 20.4 s in 3
 - **Nothing checks HiGHS's lower bound at T1.** At T0 enumeration would disagree with a wrong bound. At T1 the upper bound is the evaluator's and the schedule is classified, but the lower bound is HiGHS's word.
 - **A future ladder with a smaller gap than twenty bits resolves** would fail check 6 and name the cell. The width is a named constant, and agreement is not monotone in it.
 - **Opened by this build, deferred from review, none of them changing a result here.**
-  `Bracket` accepts NaN bounds. `lot_grid` takes block lots unclamped to the cap. Duplicate `MinParticipation` or `BlockTrades` descriptors overwrite silently. The presolve retry reuses a stale `time_limit`, so a run can overrun `wall_clock_s` by one attempt. `detail["rounds"]` counts a round that never ran when the budget is exhausted. scipy status 1 is always labelled `TIME_LIMIT`. `qubo_minimum` raises the built-in `MemoryError` for a logic condition, not out-of-memory. Gate check 9's lower bound and check 10's `lower <= upper` carry solver-sized slack. At eight bits the study-width `minimum_is_feasible` findings are not asserted empty. `tests/test_architecture.py` emitted a threading or Unicode warning during Task 1 that was not shown to be pre-existing; the full-suite run above shows no warning in its summary. These, and the reviewers' longer list in `progress.md`, go to the final review.
+  `Bracket` accepts NaN bounds. `lot_grid` takes block lots unclamped to the cap. Duplicate `MinParticipation` or `BlockTrades` descriptors overwrite silently. The presolve retry reuses a stale `time_limit`, so a run can overrun `wall_clock_s` by one attempt. `detail["rounds"]` counts a round that never ran when the budget is exhausted. scipy status 1 is always labelled `TIME_LIMIT`. `qubo_minimum` raises the built-in `MemoryError` for a logic condition, not out-of-memory. Gate check 9's lower bound and check 10's `lower <= upper` carry solver-sized slack. `tests/test_architecture.py` emitted a threading or Unicode warning during Task 1 that was not shown to be pre-existing; the full-suite run above shows no warning in its summary. These, and the reviewers' longer list in `progress.md`, go to the final review.
 
 ## What M4 picks up
 
