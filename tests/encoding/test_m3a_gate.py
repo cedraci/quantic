@@ -21,14 +21,11 @@ from quantic.encoding.diagnostics import (
 )
 from quantic.encoding.encode import encode, encode_solution, reference_breakdown
 from quantic.encoding.integer import ENCODINGS, BinaryEncoding
-from quantic.problem.generator import generate_ladder
 from quantic.problem.objective import cvar_of, optimal_zeta
-from quantic.problem.params import AssetParams, MarketParams
 from quantic.problem.risk import CVaRRisk
 from quantic.problem.schedule import Schedule
+from tests.ladder import gate_ladder
 
-BUCKET_NS = 1800 * 1_000_000_000
-SMALL = {"n_raw": 300, "n_target": 15}
 REL = 1e-9
 
 # T3 under a table encoding names thousands of bits, and a dense term of that
@@ -37,22 +34,9 @@ REL = 1e-9
 MATERIALISABLE = {"T0": 3, "T1": 3, "T2": 3, "T3": 1}
 
 
-def _params_for(tier):
-    rng = np.random.default_rng(tier.n_assets)
-    a = rng.normal(size=(tier.n_assets, tier.n_assets))
-    return MarketParams(
-        assets=tuple(
-            AssetParams(f"S{i:02d}", 0.5, 0.8, 0.1, 0.005, 400_000.0, 100.0 + i, 0.01)
-            for i in range(tier.n_assets)
-        ),
-        covariance=(a @ a.T) / tier.n_assets * 1e-5,
-        bucket_ns=BUCKET_NS,
-    )
-
-
 @pytest.fixture(scope="module")
 def ladder():
-    return generate_ladder(_params_for, seed=2026, include_cvar=True, **SMALL)
+    return gate_ladder()
 
 
 def _cases(ladder):
