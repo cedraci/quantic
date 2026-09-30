@@ -19,7 +19,7 @@ import quantic.encoding.encode as encode_module
 from quantic.encoding.integer import ENCODINGS, BinaryEncoding
 from quantic.problem.risk import CVaRRisk
 from quantic.solvers.classical import exact_pwl_milp as milp_module
-from quantic.solvers.classical.qubo_minimum import EVERY_STATE
+from quantic.solvers.classical.qubo_minimum import DECODABLE, EVERY_STATE
 from tests.ladder import tier
 from tests.solvers.gate import (
     EVERY_STATE_CASES,
@@ -28,6 +28,12 @@ from tests.solvers.gate import (
     classical,
     encoded,
 )
+
+# Design section 8: how many combinations are covered over the decodable states only.
+DECODABLE_CASES = {"domain_wall": 6, "one_hot": 11}
+
+# Checks 1 to 3: a defect in the exact program must be reported by one of these.
+CLASSICAL_CHECKS = {"solves", "methods_agree", "bracket_closes"}
 
 # Where the study's width does not find the optimum. Design section 3.2.
 NOT_THE_OPTIMUM_AT_EIGHT_BITS = {
@@ -73,7 +79,10 @@ def gate(ladder):
             found, row = encoded(
                 instance, encoding, record["optimum"], n_zeta_bits=STUDY_ZETA_BITS
             )
-            for check in ("minimises", "minimum_is_feasible", "energy_is_the_matrix"):
+            for check in (
+                "minimises", "minimum_is_feasible", "minimum_is_the_optimum",
+                "energy_is_the_matrix",
+            ):
                 if check in found:
                     findings[f"study_{check}"][tag] = found[check]
             if row is not None:
@@ -145,6 +154,13 @@ def test_the_scope_of_every_minimum_is_the_one_the_design_records(gate):
         if row["scope"] == EVERY_STATE
     }
     assert len(covered) == 16, "a combination is covered over every state nowhere"
+    scopes = {row["scope"] for row in gate["records"]["encoded"]}
+    assert scopes <= {EVERY_STATE, DECODABLE}, scopes
+    decodable = collections.Counter(
+        row["encoding"] for row in gate["records"]["encoded"]
+        if row["scope"] == DECODABLE
+    )
+    assert dict(decodable) == DECODABLE_CASES
 
 
 def test_the_gate_was_stated_at_the_width_the_design_names(gate):
@@ -181,6 +197,13 @@ def test_at_the_studys_width_the_minimum_is_not_the_optimum_on_five_cells(gate):
         row["instance"] for row in gate["records"]["study"] if row["regret"] > 1e-9
     }
     assert off == NOT_THE_OPTIMUM_AT_EIGHT_BITS
+    reported = set(gate["findings"].get("study_minimum_is_the_optimum", {}))
+    expected = {
+        (name, encoding.name)
+        for name in NOT_THE_OPTIMUM_AT_EIGHT_BITS
+        for encoding in ENCODINGS
+    }
+    assert reported == expected, (reported ^ expected)
     for name in off:
         regrets = {
             round(row["regret"], 9) for row in gate["records"]["study"]
@@ -234,7 +257,7 @@ def test_the_gate_sees_a_cut_with_the_wrong_sign(ladder, monkeypatch):
         milp_module, "variance_gradient", lambda i, s: -real(i, s)
     )
     found, _ = classical(_instance(ladder, "T0-none-2026"))
-    assert found
+    assert CLASSICAL_CHECKS & set(found), found
 
 
 def test_the_gate_sees_a_cost_the_program_got_wrong(ladder, monkeypatch):
@@ -247,4 +270,4 @@ def test_the_gate_sees_a_cost_the_program_got_wrong(ladder, monkeypatch):
 
     monkeypatch.setattr(milp_module, "cell_costs", shifted)
     found, _ = classical(_instance(ladder, "T0-D1-2026"))
-    assert found
+    assert CLASSICAL_CHECKS & set(found), found
