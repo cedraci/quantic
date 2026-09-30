@@ -161,6 +161,40 @@ def test_selling_sooner_never_adds_variance():
     assert np.all(gradient[:, -1] == 0.0)
 
 
+def test_the_gradient_at_zero_holdings():
+    """The gradient at the all-zero schedule, verified by exact quadratic formula.
+
+    At x=0, where no lots are sold and all holdings equal initial position,
+    the variance is quadratic in x. For a quadratic f(x) = c + g'x + 0.5 x'Hx,
+    the Hessian can be computed from second differences, then used to verify g.
+    """
+    inst = plain()
+    at = Schedule.from_array(np.zeros((inst.n_assets, inst.n_buckets), dtype=int))
+    gradient = variance_gradient(inst, at)
+    v_zero = evaluate(inst, at).risk_cost
+
+    h = 1.0
+    for i in range(inst.n_assets):
+        for t in range(inst.n_buckets):
+            # Evaluate at x + h*e_i
+            perturbed1 = at.as_array().copy()
+            perturbed1[i, t] = int(h)
+            v_h = evaluate(inst, Schedule.from_array(perturbed1)).risk_cost
+
+            # Evaluate at x + 2h*e_i
+            perturbed2 = at.as_array().copy()
+            perturbed2[i, t] = int(2 * h)
+            v_2h = evaluate(inst, Schedule.from_array(perturbed2)).risk_cost
+
+            # For a quadratic: H_ii = [v(2h) - 2v(h) + v(0)] / h²
+            hessian_diag = (v_2h - 2 * v_h + v_zero) / (h * h)
+
+            # Gradient from exact quadratic formula: g_i = [v(h) - v(0)] / h - (h/2) H_ii
+            gradient_from_evaluator = (v_h - v_zero) / h - (h / 2) * hessian_diag
+
+            assert gradient[i, t] == pytest.approx(gradient_from_evaluator, rel=1e-7)
+
+
 @pytest.mark.parametrize("build", EVERY_SOLVABLE, ids=lambda b: b.__name__)
 def test_the_rows_hold_at_every_schedule_on_the_grid_and_at_no_other(build):
     """One value a cell, the whole position sold, and cardinality where it binds."""
