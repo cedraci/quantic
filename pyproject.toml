@@ -62,3 +62,13 @@ layers = [
     "quantic.core",
 ]
 exhaustive = false
+
+[[tool.importlinter.contracts]]
+name = "Solvers read the problem and never build it (spec section 12)"
+type = "forbidden"
+source_modules = ["quantic.solvers"]
+forbidden_modules = [
+    "quantic.problem.generator",
+    "quantic.problem.from_bundle",
+    "quantic.problem.liquidation",
+]
