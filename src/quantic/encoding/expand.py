@@ -96,6 +96,30 @@ class ApproximandReport:
             total += table[lots]
         return total
 
+    def cell_cost(self, i: int, t: int, lots: int) -> float:
+        """The substituted temporary impact of one cell trading ``lots``.
+
+        What an exact solver minimises when it is asked for the optimum of
+        the function the encoder declares, rather than of the power law.
+        """
+        if (i, t) in self.coefficients:
+            b, c = self.coefficients[(i, t)]
+            x = float(lots)
+            return b * x + c * x * x
+        if (i, t) not in self.exact:
+            raise KeyError(
+                f"the cell at (asset {i}, bucket {t}) is in neither the fitted "
+                "coefficients nor the exact tables of this report"
+            )
+        table = self.exact[(i, t)]
+        if lots not in table:
+            raise ValueError(
+                f"{lots} is not one of the values {tuple(table)} the cell at "
+                f"(asset {i}, bucket {t}) can take, so the encoder has no cost "
+                "for it"
+            )
+        return table[lots]
+
     def describe(self) -> dict:
         """JSON-safe, for the results row."""
         return {
