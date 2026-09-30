@@ -72,3 +72,16 @@ forbidden_modules = [
     "quantic.problem.from_bundle",
     "quantic.problem.liquidation",
 ]
+
+[[tool.importlinter.contracts]]
+name = "The exact baseline does not read the encoder (M3b design section 6)"
+type = "forbidden"
+source_modules = [
+    "quantic.solvers.base",
+    "quantic.solvers.classical.lot_grid",
+    "quantic.solvers.classical.scoring",
+    "quantic.solvers.classical.brute_force",
+    "quantic.solvers.classical.milp_model",
+    "quantic.solvers.classical.exact_pwl_milp",
+]
+forbidden_modules = ["quantic.encoding"]
