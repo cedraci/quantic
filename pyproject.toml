@@ -16,6 +16,7 @@ dependencies = [
     "ortools>=9.15.6755",
     "dwave-samplers>=1.8.0",
     "dimod>=0.12.22",
+    "duckdb>=1.5.6",
 ]
 
 [project.optional-dependencies]
