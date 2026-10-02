@@ -28,6 +28,7 @@ EPSILONS = (0.0, 0.001, 0.01, 0.05)
 _SAME = 1e-9
 _BOOTSTRAP = 1000
 CELL = ["tier", "dials", "solver", "encoding", "budget_s"]
+INSTANCE = ["tier", "dials", "instance_seed"]
 
 
 def tts99(t_run: float, p: float) -> float | None:
@@ -63,6 +64,19 @@ def references(runs: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
     return bracket, qubo
 
 
+def _has_reference(runs: pl.DataFrame) -> pl.DataFrame:
+    """The coordinates of every instance with an ``ok`` reference bracket.
+
+    By coordinates, not by hash: a killed run's row has no instance hash, and
+    its instance still has, or lacks, a reference.
+    """
+    return (
+        runs.filter((pl.col("solver") == REF_BRACKET) & (pl.col("store_status") == OK))
+        .select(*INSTANCE, pl.lit(True).alias("has_ref"))
+        .unique()
+    )
+
+
 def scored(runs: pl.DataFrame) -> pl.DataFrame:
     """Every solver run with its gap, its success at each eps, and its regret."""
     bracket, qubo = references(runs)
@@ -70,6 +84,8 @@ def scored(runs: pl.DataFrame) -> pl.DataFrame:
         runs.filter(pl.col("kind") == RUN)
         .join(bracket, on="instance_hash", how="left")
         .join(qubo, on=["instance_hash", "encoding", "zeta_bits"], how="left")
+        .join(_has_reference(runs), on=INSTANCE, how="left")
+        .with_columns(pl.col("has_ref").fill_null(False))
     )
     # No reference row is no success and no gap -- never a null that turns a
     # success rate into NaN. "Closed" decides only gap versus width.
@@ -156,6 +172,9 @@ def cells(runs: pl.DataFrame, *, eps: float = 0.01, seed: int = 0) -> pl.DataFra
             "n_runs": group.height,
             "n_killed": int((group["store_status"] == "killed").sum()),
             "n_errors": int((group["store_status"] == "error").sum()),
+            # Instances with no ok reference: their runs cannot succeed, which
+            # is the reference's failure, not the solver's.
+            "n_missing_refs": group.filter(~pl.col("has_ref"))["instance_seed"].n_unique(),
             "gap_median": float(gaps.median()) if gaps.len() else None,
             "gap_q1": float(gaps.quantile(0.25)) if gaps.len() else None,
             "gap_q3": float(gaps.quantile(0.75)) if gaps.len() else None,

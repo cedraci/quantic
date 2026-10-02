@@ -6,7 +6,7 @@ import pytest
 from quantic.bench.keys import REF_QUBO_MINIMUM, REFERENCE, RUN, CodeVersion, Task
 from quantic.bench.metrics import cells, scored, tts99
 from quantic.bench.report import bracket_check, dial_effects, report
-from quantic.bench.store import OK, Store, blank_row
+from quantic.bench.store import ERROR, KILLED, OK, Store, blank_row
 from quantic.problem.dials import Dials
 from tests.bench.rows import ref, row, run_row, write
 
@@ -203,3 +203,87 @@ def test_a_cells_interval_does_not_depend_on_the_other_cells(tmp_path):
         both = everything.filter(pl.col("dials") == d).row(0, named=True)
         assert alone["tts99_lo_s"] == both["tts99_lo_s"]
         assert alone["tts99_hi_s"] == both["tts99_hi_s"]
+
+
+def test_a_cell_without_its_reference_says_so_and_the_failed_reference_is_listed(tmp_path):
+    broken = ref("none", 10.0, 10.0)
+    broken.update(store_status=ERROR, status=None, lower=None, upper=None, total=None,
+                  error="ArithmeticError: the reference failed")
+    rows = [broken, ref("D1", 10.0, 10.0),
+            run_row("none", "sa", 0, 10.0), run_row("D1", "sa", 0, 10.0)]
+    store = write(tmp_path / "s.duckdb", rows)
+    with Store(store, read_only=True) as s:
+        table = cells(s.runs())
+    missing = dict(zip(table["dials"], table["n_missing_refs"], strict=True))
+    assert missing == {"none": 1, "D1": 0}
+
+    report(store, tmp_path / "out")
+    listed = pl.read_csv(tmp_path / "out" / "references.csv")
+    assert listed["key"].to_list() == [broken["key"]]
+    assert listed["store_status"].to_list() == [ERROR]
+    assert listed["error"].to_list() == ["ArithmeticError: the reference failed"]
+    text = (tmp_path / "out" / "references.md").read_text(encoding="utf-8")
+    assert "ArithmeticError: the reference failed" in text
+
+
+def test_dial_effects_say_which_solver_they_skipped_and_why():
+    labels = [d.label for d in Dials.combinations(include_cvar=True)]
+    whole = pl.DataFrame({
+        "tier": ["T0"] * 16, "dials": labels, "solver": ["sa"] * 16,
+        "budget_s": [1.0] * 16, "gap_median": [0.0] * 16,
+    })
+    short = whole.filter(pl.col("dials") != "D1+D2").with_columns(solver=pl.lit("tabu"))
+    gapless = whole.with_columns(
+        solver=pl.lit("greedy"),
+        gap_median=pl.when(pl.col("dials") == "D3").then(None).otherwise(0.0),
+    )
+    effects = dial_effects(pl.concat([whole, short, gapless]))
+    skipped = effects.filter(pl.col("effect") == "skipped")
+    notes = dict(zip(skipped["solver"], skipped["note"], strict=True))
+    assert set(notes) == {"tabu", "greedy"}
+    assert "D1+D2" in notes["tabu"] and "no cell" in notes["tabu"]
+    assert "D3" in notes["greedy"] and "no gap" in notes["greedy"]
+    assert effects.filter(pl.col("solver") == "sa").height == 4 + 6
+
+
+def test_the_bracket_check_says_how_much_it_compared(tmp_path):
+    compared = write(tmp_path / "a.duckdb", [
+        ref("none", 10.0, 10.0), run_row("none", "cpsat", 0, 10.0, lower=10.0, upper=10.0),
+    ])
+    report(compared, tmp_path / "a")
+    text = (tmp_path / "a" / "bracket_check.md").read_text(encoding="utf-8")
+    assert "1 CP-SAT run on 1 instance" in text and "_none_" in text
+
+    nothing = write(tmp_path / "b.duckdb", [ref("none", 10.0, 10.0),
+                                            run_row("none", "sa", 0, 10.0)])
+    report(nothing, tmp_path / "b")
+    text = (tmp_path / "b" / "bracket_check.md").read_text(encoding="utf-8")
+    assert "Nothing was compared" in text and "_none_" not in text
+
+
+def test_a_commit_the_store_does_not_hold_is_refused_by_name(tmp_path):
+    store = write(tmp_path / "s.duckdb", [ref("none", 10.0, 10.0),
+                                          run_row("none", "sa", 0, 10.0)])
+    with pytest.raises(ValueError, match="deadbeef.*c0ffee"):
+        report(store, tmp_path / "out", commit="deadbeef")
+
+
+def test_killed_and_failed_runs_count_against_success_and_never_succeed(tmp_path):
+    killed = run_row("none", "sa", 2, None, feasible=None)
+    killed.update(store_status=KILLED, instance_hash=None, status=None, total_s=None,
+                  total_bps=None, error="killed after 33.0 s")
+    # A failed run that somehow carries a total at the optimum still never succeeds.
+    failed = run_row("none", "sa", 3, 10.0, feasible=True)
+    failed.update(store_status=ERROR, status=None, error="WorkerDied: exit code 3")
+    rows = [ref("none", 10.0, 10.0), run_row("none", "sa", 0, 10.0),
+            run_row("none", "sa", 1, 10.0), killed, failed]
+    with Store(write(tmp_path / "s.duckdb", rows), read_only=True) as s:
+        runs = s.runs()
+    out = scored(runs)
+    for status in (KILLED, ERROR):
+        mine = out.filter(pl.col("store_status") == status)
+        assert not any(mine[f"ok_{e}"].any() for e in (0.0, 0.001, 0.01, 0.05)), status
+    got = cells(runs).row(0, named=True)
+    assert (got["n_runs"], got["n_killed"], got["n_errors"]) == (4, 1, 1)
+    assert got["p_success"] == 0.5
+    assert got["n_missing_refs"] == 0

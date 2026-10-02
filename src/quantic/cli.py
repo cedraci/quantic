@@ -8,11 +8,14 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from quantic.bench import config as bench_config
 from quantic.bench import report as bench_report
 from quantic.bench import runner as bench_runner
+from quantic.bench.pool import WorkerStartError
+from quantic.bench.store import SchemaMismatch, StoreBusy
 from quantic.core.session import NAMED_SESSIONS, SessionError, TradingSession
 from quantic.data.bundle import DatasetBundle
 from quantic.data.catalog import DEFAULT_CATALOG_PATH, Catalog, DuplicateBundleError
@@ -346,6 +349,11 @@ def request(
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _say_why(exc: Exception) -> None:
+    # Unwrapped, and escaped: a path or a list in the message is not markup.
+    console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+
+
 def _experiment(path: Path) -> bench_config.Experiment:
     try:
         return bench_config.load(path)
@@ -385,8 +393,8 @@ def bench_run(
             _experiment(config), root=_REPO_ROOT, store=store, workers=workers,
             allow_dirty=allow_dirty,
         )
-    except bench_runner.DirtyTree as exc:
-        console.print(f"[red]{exc}[/red]")
+    except (bench_runner.DirtyTree, StoreBusy, SchemaMismatch, WorkerStartError) as exc:
+        _say_why(exc)
         raise typer.Exit(code=1) from exc
     console.print(
         f"wrote {s.n_written} rows: {s.n_killed} killed, {s.n_errors} errors"
@@ -399,6 +407,11 @@ def bench_report_command(
     out: Annotated[Path, typer.Option("--out")],
     commit: Annotated[str | None, typer.Option("--commit")] = None,
 ) -> None:
-    """Write the crossover tables, dial effects and bracket check."""
-    for path in bench_report.report(store, out, commit=commit):
+    """Write the crossover tables, dial effects, bracket check and failed references."""
+    try:
+        written = bench_report.report(store, out, commit=commit)
+    except (FileNotFoundError, StoreBusy, SchemaMismatch, bench_report.CommitChoice) as exc:
+        _say_why(exc)
+        raise typer.Exit(code=1) from exc
+    for path in written:
         console.print(str(path))
