@@ -9,28 +9,13 @@ from __future__ import annotations
 
 import functools
 
-import numpy as np
-
+from quantic.bench.instances import GATE_SEED, N_RAW, N_TARGET, synthetic_params
 from quantic.problem.generator import generate_ladder
 from quantic.problem.instance import Instance
-from quantic.problem.params import AssetParams, MarketParams
 
-BUCKET_NS = 1800 * 1_000_000_000
-SEED = 2026
-SMALL = {"n_raw": 300, "n_target": 15}
-
-
-def params_for(tier) -> MarketParams:
-    rng = np.random.default_rng(tier.n_assets)
-    a = rng.normal(size=(tier.n_assets, tier.n_assets))
-    return MarketParams(
-        assets=tuple(
-            AssetParams(f"S{i:02d}", 0.5, 0.8, 0.1, 0.005, 400_000.0, 100.0 + i, 0.01)
-            for i in range(tier.n_assets)
-        ),
-        covariance=(a @ a.T) / tier.n_assets * 1e-5,
-        bucket_ns=BUCKET_NS,
-    )
+SEED = GATE_SEED
+SMALL = {"n_raw": N_RAW, "n_target": N_TARGET}
+params_for = synthetic_params
 
 
 @functools.cache
