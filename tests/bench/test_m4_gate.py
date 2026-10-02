@@ -5,8 +5,9 @@ Every check is about correctness or integrity; none says a solver is good.
 A slow sampler is a finding for the result doc, not a failure here.
 
 The experiment runs once per session into a temporary store
-(``experiments/m4-gate.toml``, about ten minutes on 14 workers); every check
-reads that store. Checks 6 and 7 run small experiments of their own.
+(``experiments/m4-gate.toml``, 1,248 tasks, about 13.5 minutes on 14 workers
+in the dry run, spec section 9); every check reads that store. Checks 6 and 7
+run small experiments of their own.
 
 Never weaken a check to make it pass. If one fails, stop and report which
 check, which instance, which solver and which encoding.
@@ -15,6 +16,7 @@ check, which instance, which solver and which encoding.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -52,15 +54,37 @@ SAME = 1e-9
 DENSE = 1e-6
 SOLVERS = ("almgren_chriss", "exact_pwl_milp", "cpsat", "simulated_annealing", "tabu",
            "greedy")
+SAMPLERS = ("simulated_annealing", "tabu", "greedy")
+# The crossover tables' solver columns, one table per budget in the gate file.
+COLUMNS = {
+    1.0: {"almgren_chriss"},
+    60.0: {"exact_pwl_milp", "cpsat"},
+    600.0: set(SAMPLERS),
+}
+# A crossover cell ends in a TTS or the censored marker, then the encoding if any.
+TTS_OR_CENSORED = re.compile(
+    rf" / (?:[-+.0-9e]+s|{CENSORED}, > [-+.0-9e]+ s)(?: \([a-z_]+\))?$"
+)
 
 
 @pytest.fixture(scope="module")
-def gate(tmp_path_factory) -> pl.DataFrame:
+def gate_store(tmp_path_factory) -> Path:
     store = tmp_path_factory.mktemp("gate") / "gate.duckdb"
     summary = run(load(GATE), root=ROOT, store=store, allow_dirty=True)
     assert summary.n_errors == 0 and summary.n_killed == 0, summary
-    with Store(store, read_only=True) as s:
+    return store
+
+
+@pytest.fixture(scope="module")
+def gate(gate_store) -> pl.DataFrame:
+    with Store(gate_store, read_only=True) as s:
         return s.runs()
+
+
+@pytest.fixture(scope="module")
+def gate_samples(gate_store) -> pl.DataFrame:
+    with Store(gate_store, read_only=True) as s:
+        return s.samples()
 
 
 def _schedule(row) -> Schedule:
@@ -94,19 +118,25 @@ def test_check_2_cpsat_meets_the_reference_bracket_and_t0_meets_brute_force(gate
     cp = gate.filter((pl.col("solver") == "cpsat") & pl.col("lower").is_not_null())
     assert cp["instance_hash"].n_unique() == 32
 
+    # The reference, and the same MILP run as a budgeted solver, both answer
+    # to brute force at T0, as CP-SAT does.
+    compared = dict.fromkeys((REF_BRACKET, "cpsat", "exact_pwl_milp"), 0)
     by = {
         (r["instance_hash"], r["solver"]): r
         for r in gate.filter(pl.col("tier") == "T0").iter_rows(named=True)
-        if r["solver"] in (REF_BRACKET, REF_BRUTE_FORCE, "cpsat")
+        if r["solver"] in (REF_BRUTE_FORCE, *compared)
     }
-    for (instance, solver), row in by.items():
-        if solver != REF_BRUTE_FORCE:
-            continue
+    brute = {i: row for (i, solver), row in by.items() if solver == REF_BRUTE_FORCE}
+    assert len(brute) == 16
+    for instance, row in brute.items():
         optimum = row["total"]
-        for other in (REF_BRACKET, "cpsat"):
+        assert by[(instance, REF_BRACKET)]["status"] == OPTIMAL, instance
+        for other in compared:
             mine = by[(instance, other)]
             if mine["status"] == OPTIMAL:
                 assert mine["total"] == pytest.approx(optimum, rel=SAME), (instance, other)
+                compared[other] += 1
+    assert all(n > 0 for n in compared.values()), compared
 
 
 def test_check_3_every_sampler_reports_the_qubos_own_energy(gate):
@@ -149,7 +179,7 @@ def test_check_4_the_sampler_pipeline_returns_the_qubos_minimum_intact(gate):
             assert result.objective.total == pytest.approx(row["qubo_total"], rel=SAME), where
 
 
-def test_check_5_rerunning_a_task_reproduces_its_row(gate):
+def test_check_5_rerunning_a_task_reproduces_its_row(gate, gate_samples):
     code = code_version(ROOT)
     executor = Executor(code)
     picked = (
@@ -159,8 +189,12 @@ def test_check_5_rerunning_a_task_reproduces_its_row(gate):
     tasks = {t.key(code): t for t in expand(load(GATE))}
     ignore = {"total_s", "timings"}
     for key in picked["key"]:
-        again, _, _ = executor.run(key, tasks[key])
+        again, samples, _ = executor.run(key, tasks[key])
         row = gate.filter(pl.col("key") == key).row(0, named=True)
+        # The samples it keeps are its row too. (A trace is a timing.)
+        stored = gate_samples.filter(pl.col("key") == key).drop("key").rows()
+        assert stored == sorted(samples), key
+        assert bool(samples) == (row["solver"] in SAMPLERS), key
         for column, value in again.items():
             if column in ignore:
                 continue
@@ -218,11 +252,19 @@ def test_check_7_a_hanging_solver_is_killed_and_the_run_carries_on(tmp_path):
 
 
 def test_check_8_the_report_fills_every_cell(gate):
+    declared = {}
+    for p in load(GATE).solvers:
+        for budget in p.budgets_s:
+            declared.setdefault(budget, set()).add(p.name)
+    assert declared == COLUMNS
     best = best_encoding(cells(gate))
-    for budget in best["budget_s"].unique().to_list():
+    assert set(best["budget_s"].unique().to_list()) == set(COLUMNS)
+    for budget, expected in COLUMNS.items():
         table = crossover(best, budget)
         solvers = [c for c in table.columns if c not in ("tier", "dials")]
+        assert set(solvers) == expected, budget
         assert table.height == 32, budget
         for column in solvers:
             assert table[column].null_count() == 0, (budget, column)
-            assert all(t.endswith(("s", ")", CENSORED)) for t in table[column]), column
+            for text in table[column]:
+                assert TTS_OR_CENSORED.search(text), (budget, column, text)
