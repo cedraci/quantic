@@ -1,4 +1,5 @@
 import multiprocessing as mp
+import time
 
 import duckdb
 import pytest
@@ -80,3 +81,28 @@ def test_a_store_in_a_directory_that_does_not_exist_yet_is_created(tmp_path):
     with Store(path) as s:
         assert s.done_keys() == set()
     assert path.exists()
+
+
+def test_a_task_with_fifty_thousand_samples_is_written_in_seconds(tmp_path):
+    """A 60 s greedy run keeps ~120k distinct samples; the writer must keep up.
+
+    Row-at-a-time inserts ran at ~2,500 rows/s (20 s here); a frame insert runs
+    at ~300,000 rows/s. The bound leaves room for a loaded machine.
+    """
+    row = run_row("none", "greedy", 0, 10.0, encoding="binary")
+    samples = [(f"{i:016x}", 1 + i % 3, -float(i), "feasible", 10.0 + i)
+               for i in range(50_000)]
+    samples[7] = (samples[7][0], 2, -7.0, "infeasible", None)
+    trace = [(i / 1000, -float(i)) for i in range(5_000)]
+    with Store(tmp_path / "s.duckdb") as s:
+        started = time.perf_counter()
+        s.write(row, samples, trace)
+        seconds = time.perf_counter() - started
+        back = s.con.execute(
+            "SELECT digest, count, energy, classification, total FROM samples "
+            "ORDER BY digest"
+        ).fetchall()
+        assert s.con.execute("SELECT seconds, best_energy FROM traces "
+                             "ORDER BY seconds").fetchall() == trace
+    assert back == sorted(samples)
+    assert seconds < 5.0, seconds

@@ -64,6 +64,27 @@ RUN_COLUMNS = (
 )
 
 
+# Column types of the tables written from frames, after ``key``, in table order.
+_TYPES = {
+    "samples": (pl.String, pl.Int64, pl.Float64, pl.String, pl.Float64),
+    "traces": (pl.Float64, pl.Float64),
+}
+
+
+def _frame(key: str, rows: list[tuple], types: tuple) -> pl.DataFrame:
+    """``key`` and the rows' columns, by position, as the table declares them.
+
+    Ragged rows are refused. Rows of one uniform wrong width are left for
+    DuckDB to refuse, as it would refuse them row by row.
+    """
+    columns = list(zip(*rows, strict=True))
+    data = {"key": pl.Series("key", [key] * len(rows), dtype=pl.String)}
+    for i, values in enumerate(columns):
+        dtype = types[i] if i < len(types) else None
+        data[f"c{i}"] = pl.Series(f"c{i}", values, dtype=dtype)
+    return pl.DataFrame(data)
+
+
 def blank_row(
     key: str, task: Task, code: CodeVersion, where: str, versions: str
 ) -> dict:
@@ -135,7 +156,12 @@ class Store:
         return {row[0] for row in self.con.execute("SELECT key FROM runs").fetchall()}
 
     def write(self, row: dict, samples: list[tuple] = (), trace: list[tuple] = ()) -> None:
-        """One finished task, all its rows, in one transaction."""
+        """One finished task, all its rows, in one transaction.
+
+        Samples and trace points go in as one frame each: a sampler run can keep
+        a hundred thousand distinct samples, and row-at-a-time inserts would
+        leave the study waiting on its writer.
+        """
         missing = set(RUN_COLUMNS) - set(row)
         extra = set(row) - set(RUN_COLUMNS)
         if missing or extra:
@@ -148,20 +174,20 @@ class Store:
         self.con.execute("BEGIN TRANSACTION")
         try:
             self.con.execute(f"INSERT INTO runs VALUES ({marks})", values)
-            if samples:
-                self.con.executemany(
-                    "INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?)",
-                    [(row["key"], *s) for s in samples],
-                )
-            if trace:
-                self.con.executemany(
-                    "INSERT INTO traces VALUES (?, ?, ?)",
-                    [(row["key"], *t) for t in trace],
-                )
+            for table, rows in (("samples", samples), ("traces", trace)):
+                if rows:
+                    self._insert(table, _frame(row["key"], rows, _TYPES[table]))
             self.con.execute("COMMIT")
         except Exception:
             self.con.execute("ROLLBACK")
             raise
+
+    def _insert(self, table: str, frame: pl.DataFrame) -> None:
+        self.con.register("_rows", frame)
+        try:
+            self.con.execute(f"INSERT INTO {table} SELECT * FROM _rows")
+        finally:
+            self.con.unregister("_rows")
 
     def runs(self) -> pl.DataFrame:
         return self.con.execute("SELECT * FROM runs ORDER BY key").pl()
