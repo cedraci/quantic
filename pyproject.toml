@@ -13,6 +13,7 @@ dependencies = [
     "rich>=13.0",
     # Windows ships no system IANA tz database; core.session needs one.
     "tzdata>=2024.1",
+    "ortools>=9.15.6755",
 ]
 
 [project.optional-dependencies]
@@ -83,5 +84,15 @@ source_modules = [
     "quantic.solvers.classical.brute_force",
     "quantic.solvers.classical.milp_model",
     "quantic.solvers.classical.exact_pwl_milp",
+    "quantic.solvers.classical.cpsat",
 ]
 forbidden_modules = ["quantic.encoding"]
+
+[[tool.importlinter.contracts]]
+name = "The three exact methods are independent (M4 design section 8)"
+type = "independence"
+modules = [
+    "quantic.solvers.classical.brute_force",
+    "quantic.solvers.classical.exact_pwl_milp",
+    "quantic.solvers.classical.cpsat",
+]
