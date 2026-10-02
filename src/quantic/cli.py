@@ -10,6 +10,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from quantic.bench import config as bench_config
+from quantic.bench import report as bench_report
+from quantic.bench import runner as bench_runner
 from quantic.core.session import NAMED_SESSIONS, SessionError, TradingSession
 from quantic.data.bundle import DatasetBundle
 from quantic.data.catalog import DEFAULT_CATALOG_PATH, Catalog, DuplicateBundleError
@@ -22,6 +25,8 @@ from quantic.data.synth import SynthConfig, generate_bundle
 app = typer.Typer(help="Quantic: quantum vs classical liquidation benchmarking.")
 data_app = typer.Typer(help="Dataset bundles.")
 app.add_typer(data_app, name="data")
+bench_app = typer.Typer(help="The benchmark: plan, run and report an experiment.")
+app.add_typer(bench_app, name="bench")
 # Rich defaults to width 80 when stdout is not a TTY (e.g. under Typer's
 # CliRunner in tests), which truncates the `data list` table. Pin a wide
 # enough width so CLI output is deterministic regardless of terminal.
@@ -335,3 +340,65 @@ def request(
     )
     req.write(out)
     console.print(f"[green]wrote request[/green] {req.request_id} -> {out}")
+
+
+# The repository whose commit every bench row names: the one this package runs from.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _experiment(path: Path) -> bench_config.Experiment:
+    try:
+        return bench_config.load(path)
+    except bench_config.ConfigError as exc:
+        raise typer.BadParameter(str(exc), param_hint="CONFIG") from exc
+
+
+@bench_app.command("plan")
+def bench_plan(
+    config: Annotated[Path, typer.Argument(help="Experiment TOML.")],
+    store: Annotated[Path | None, typer.Option("--store")] = None,
+    workers: Annotated[int | None, typer.Option("--workers")] = None,
+) -> None:
+    """Count an experiment's tasks and estimate the time left. Runs nothing."""
+    p = bench_runner.plan(
+        _experiment(config), root=_REPO_ROOT, store=store, workers=workers
+    )
+    console.print(
+        f"{p.n_tasks} tasks, {p.n_done} already in the store, {p.n_todo} to run; "
+        f"about {p.estimate_s / 3600:.1f} h on {p.n_workers} workers "
+        "(every budget spent in full: an upper estimate)"
+    )
+
+
+@bench_app.command("run")
+def bench_run(
+    config: Annotated[Path, typer.Argument(help="Experiment TOML.")],
+    store: Annotated[Path, typer.Option("--store")],
+    workers: Annotated[int | None, typer.Option("--workers")] = None,
+    allow_dirty: Annotated[
+        bool, typer.Option("--allow-dirty", help="Run on uncommitted changes; recorded.")
+    ] = False,
+) -> None:
+    """Run every task the store does not hold yet. Safe to interrupt and rerun."""
+    try:
+        s = bench_runner.run(
+            _experiment(config), root=_REPO_ROOT, store=store, workers=workers,
+            allow_dirty=allow_dirty,
+        )
+    except bench_runner.DirtyTree as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(
+        f"wrote {s.n_written} rows: {s.n_killed} killed, {s.n_errors} errors"
+    )
+
+
+@bench_app.command("report")
+def bench_report_command(
+    store: Annotated[Path, typer.Argument(help="The DuckDB store.")],
+    out: Annotated[Path, typer.Option("--out")],
+    commit: Annotated[str | None, typer.Option("--commit")] = None,
+) -> None:
+    """Write the crossover tables, dial effects and bracket check."""
+    for path in bench_report.report(store, out, commit=commit):
+        console.print(str(path))
