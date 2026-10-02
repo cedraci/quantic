@@ -75,11 +75,46 @@ def test_all_dials_means_the_sixteen_combinations(tmp_path):
         (("[solvers.cpsat]", "[solvers.cplex]"), "unknown solver"),
         (('dials = ["none", "D1+D3"]', 'dials = ["D5"]'), "dials"),
         (('seeds = "0..2"', 'seeds = "0-2"'), "a..b"),
+        # seeds: integers only, at least one, each once, ranges that run upwards
+        (("seeds = [0, 1]", "seeds = [true, 1]"), "seeds"),
+        (("seeds = [2026, 2027]", "seeds = []"), "seeds"),
+        (('seeds = "0..2"', 'seeds = "5..2"'), "5..2"),
+        (('seeds = "0..2"', 'seeds = "a..b"'), "a..b"),
+        (('seeds = "0..2"', 'seeds = "0..2.5"'), "a..b"),
+        (("seeds = [0, 1]", "seeds = [0, 0]"), r"\[0\] more than once"),
+        (("seeds = [2026, 2027]", "seeds = [2026, 2026]"), "more than once"),
+        # budgets: each once
+        (("budgets_s = [1, 10]", "budgets_s = [1, 1.0]"), "more than once"),
+        (("budgets_s = [1, 10]", 'budgets_s = [1, "10"]'), "positive"),
+        # tiers: a list of names the ladder knows; QUBO minima only on those tiers
+        (('tiers = ["T0", "T1"]', 'tiers = "T0"'), "tiers"),
+        (('tiers = ["T0", "T1"]', 'tiers = ["T0", "T9"]'), "tiers"),
+        (('tiers = ["T0", "T1"]', "tiers = []"), "tiers"),
+        (('tiers = ["T0", "T1"]', 'tiers = ["T0", "T0"]'), "more than once"),
+        (('qubo_minimum_tiers = ["T0"]', 'qubo_minimum_tiers = ["T2"]'), "qubo_minimum_tiers"),
+        (('qubo_minimum_tiers = ["T0"]', 'qubo_minimum_tiers = "T0"'), "qubo_minimum_tiers"),
+        # max_samples and zeta_bits: positive integers where given
+        (('budgets_s = [0.5]', 'budgets_s = [0.5]\nmax_samples = 0'), "max_samples"),
+        (('budgets_s = [0.5]', 'budgets_s = [0.5]\nmax_samples = 1.5'), "max_samples"),
+        (('budgets_s = [0.5]', 'budgets_s = [0.5]\nmax_samples = true'), "max_samples"),
+        (('budgets_s = [0.5]', 'budgets_s = [0.5]\nzeta_bits = 0'), "zeta_bits"),
+        (('budgets_s = [0.5]', 'budgets_s = [0.5]\nzeta_bits = "8"'), "zeta_bits"),
+        # a coordinate listed twice is the same task twice: one key, two rows
+        (('dials = ["none", "D1+D3"]', 'dials = ["none", "none"]'), "more than once"),
+        (('encodings = ["binary", "domain_wall"]', 'encodings = ["binary", "binary"]'),
+         "more than once"),
     ],
 )
 def test_a_config_that_does_not_say_what_it_means_is_refused(tmp_path, edit, message):
     with pytest.raises(ConfigError, match=message):
         _load(tmp_path, GOOD.replace(*edit))
+
+
+def test_a_config_at_the_edges_of_strictness_still_reads(tmp_path):
+    exp = _load(tmp_path, GOOD.replace('seeds = "0..2"', 'seeds = "2..2"').replace(
+        "budgets_s = [0.5]", "budgets_s = [0.5]\nmax_samples = 1\nzeta_bits = 1"))
+    tabu = next(p for p in exp.solvers if p.name == "tabu")
+    assert (tabu.seeds, tabu.max_samples, tabu.zeta_bits) == ((2,), 1, 1)
 
 
 def test_a_config_with_no_solver_is_refused(tmp_path):
