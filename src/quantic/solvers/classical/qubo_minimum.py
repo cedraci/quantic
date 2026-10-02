@@ -37,6 +37,16 @@ _TIE_RTOL = 1e-9
 _BLOCK = 64
 _MAX_CANDIDATES = 20_000_000
 
+# How far above the witness's energy a state may sit and still be kept. The
+# split sum and the dense z'Qz accumulate in different orders, and at the
+# dynamic ranges seen 1e-9 left round-off no room. M3b's final review measured
+# the margin to the nearest state that matters at 5e-3 or more.
+_WITNESS_RTOL = 1e-6
+
+
+class EnumerationTooLarge(RuntimeError):
+    """More states pass the bound than this enumeration will hold."""
+
 
 @dataclass(frozen=True)
 class QuboMinimum:
@@ -177,7 +187,7 @@ def qubo_minimum(enc: EncodedInstance) -> QuboMinimum:
     witness = enc.instance.witness
     start_bits = _rebuild(enc, gadget, _outside_of(enc, witness, outside), outside)
     incumbent = float(enc.qubo.energy(start_bits))
-    threshold = incumbent + _TIE_RTOL * max(1.0, abs(incumbent))
+    threshold = incumbent + _WITNESS_RTOL * max(1.0, abs(incumbent))
 
     # Every state whose bound is at or below the incumbent.
     picked_first: list[np.ndarray] = []
@@ -198,7 +208,7 @@ def qubo_minimum(enc: EncodedInstance) -> QuboMinimum:
             picked_bound.append(values[a, b])
             n_picked += a.size
             if n_picked > _MAX_CANDIDATES:
-                raise MemoryError(
+                raise EnumerationTooLarge(
                     f"more than {_MAX_CANDIDATES} states sit at or below the "
                     f"witness's energy on {enc.instance.instance_id}; the witness "
                     "is too poor a start for this enumeration"

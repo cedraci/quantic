@@ -91,6 +91,15 @@ def lot_grid(instance: Instance) -> LotGrid:
     cardinality: int | None = None
     liquidates = False
 
+    kinds = [type(c) for c in instance.constraints]
+    repeated = sorted({k.__name__ for k in kinds if kinds.count(k) > 1})
+    if repeated:
+        raise ValueError(
+            f"{instance.instance_id} carries more than one {repeated} constraint. "
+            "The grid reads each kind once, so a second would silently replace "
+            "the first"
+        )
+
     for c in instance.constraints:
         if isinstance(c, FullLiquidation):
             liquidates = True
@@ -126,6 +135,10 @@ def lot_grid(instance: Instance) -> LotGrid:
         for t in range(instance.n_buckets):
             block = blocks.get((i, t))
             if block is not None:
+                # The block is taken as the venue fixes it, even above the
+                # per-bucket cap: the cap bounds what a schedule chooses, a block
+                # is a size it does not choose. The generator carves blocks from
+                # a witness inside the cap, so the ladder never meets the case.
                 # A block below the venue minimum can only stay untraded.
                 row.append((0, block) if block >= minimums[i] else (0,))
             elif minimums[i] <= 1:

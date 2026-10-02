@@ -172,3 +172,19 @@ def test_the_grid_and_the_encoder_agree_on_every_cell_of_the_ladder():
                         mine, tuple(plan.values)
                     )
     assert not differing, differing
+
+
+@pytest.mark.parametrize(
+    "repeated",
+    [
+        (MinParticipation(min_lots=(1, 1)), MinParticipation(min_lots=(2, 1))),
+        (
+            BlockTrades(blocks=(Block(asset=0, bucket=0, lots=3),)),
+            BlockTrades(blocks=(Block(asset=1, bucket=1, lots=2),)),
+        ),
+    ],
+)
+def test_a_constraint_given_twice_is_refused_not_overwritten(repeated):
+    inst = instance(constraints=(FullLiquidation(), *repeated))
+    with pytest.raises(ValueError, match="more than one"):
+        lot_grid(inst)

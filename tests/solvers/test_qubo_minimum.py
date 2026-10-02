@@ -255,3 +255,10 @@ def test_a_gadget_with_no_risk_aversion_charges_nothing(encoding):
     assert score(inst, sample.schedule)[0].total == pytest.approx(
         brute_force(inst).objective.total, rel=REL
     )
+
+
+def test_too_many_states_under_the_bound_raise_a_typed_error(monkeypatch):
+    """Not the built-in MemoryError: the bench catches errors by type."""
+    monkeypatch.setattr(module, "_MAX_CANDIDATES", 0)
+    with pytest.raises(module.EnumerationTooLarge, match="witness"):
+        qubo_minimum(encode(plain(), BinaryEncoding()))
