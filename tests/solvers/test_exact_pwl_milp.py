@@ -206,3 +206,71 @@ def test_it_answers_to_the_solver_protocol():
     assert isinstance(solver, Solver)
     inst = plain()
     assert solver.solve(inst, Budget()).schedule == exact_pwl_milp(inst).schedule
+
+
+def test_a_limit_nobody_set_is_raised_and_not_called_a_time_limit(monkeypatch):
+    real = module.milp
+
+    def iteration_limit(**kwargs):
+        solved = real(**kwargs)
+        return types.SimpleNamespace(
+            status=1, x=solved.x, fun=solved.fun, message="iteration limit",
+            mip_dual_bound=solved.mip_dual_bound,
+        )
+
+    monkeypatch.setattr(module, "milp", iteration_limit)
+    with pytest.raises(RuntimeError, match="never set"):
+        exact_pwl_milp(plain())
+
+
+def test_a_bound_above_the_schedule_is_raised_not_clamped(monkeypatch):
+    """The old min(proven, total) turned a wrong bound into a plausible one."""
+    real = module.milp
+
+    def wrong_bound(**kwargs):
+        solved = real(**kwargs)
+        return types.SimpleNamespace(
+            status=1, x=solved.x, fun=solved.fun, message="time limit",
+            mip_dual_bound=solved.mip_dual_bound + 1e3,
+        )
+
+    monkeypatch.setattr(module, "milp", wrong_bound)
+    with pytest.raises(ValueError, match="one of the two is wrong"):
+        exact_pwl_milp(plain(), budget=Budget(wall_clock_s=60.0))
+
+
+def test_the_presolve_retry_gets_the_time_that_is_left(monkeypatch):
+    real = module.milp
+    limits = []
+    clock = iter([0.0, 0.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
+    monkeypatch.setattr(module.time, "perf_counter", lambda: next(clock, 10.0))
+
+    def presolve_fails(**kwargs):
+        limits.append(kwargs["options"].get("time_limit"))
+        if kwargs["options"].get("presolve", True):
+            return types.SimpleNamespace(
+                status=4, x=None, fun=None, message="Solve error", mip_dual_bound=None
+            )
+        return real(**kwargs)
+
+    monkeypatch.setattr(module, "milp", presolve_fails)
+    exact_pwl_milp(plain(), budget=Budget(wall_clock_s=60.0))
+    assert limits[:2] == [60.0, 50.0]
+
+
+def test_a_round_the_budget_never_let_run_is_not_counted(monkeypatch):
+    """Variance needs a second round; the clock runs out before it starts."""
+    calls = []
+    real = module.milp
+    clock = iter([0.0, 0.0])
+    monkeypatch.setattr(module.time, "perf_counter", lambda: next(clock, 100.0))
+
+    def counted(**kwargs):
+        calls.append(1)
+        return real(**kwargs)
+
+    monkeypatch.setattr(module, "milp", counted)
+    result = exact_pwl_milp(plain(), budget=Budget(wall_clock_s=60.0))
+    assert result.status == TIME_LIMIT
+    assert len(calls) == 1
+    assert result.detail["rounds"] == 1

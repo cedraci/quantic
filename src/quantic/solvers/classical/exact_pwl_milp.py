@@ -125,7 +125,6 @@ def exact_pwl_milp(
     status = OPTIMAL
 
     while True:
-        rounds += 1
         options = {"mip_rel_gap": 0.0}
         if limit is not None:
             left = limit - (time.perf_counter() - started)
@@ -133,6 +132,7 @@ def exact_pwl_milp(
                 status = TIME_LIMIT
                 break
             options["time_limit"] = left
+        rounds += 1
 
         program = {
             "c": cost,
@@ -150,7 +150,14 @@ def exact_pwl_milp(
             # carry cuts -- T0-D1+D2 at the fourth round is one. The program
             # itself is sound: without presolve the same solver solves it.
             presolve_retries += 1
-            solved = milp(**program, options={**options, "presolve": False})
+            retry = {**options, "presolve": False}
+            if limit is not None:
+                left = limit - (time.perf_counter() - started)
+                if left <= 0.0:
+                    status = TIME_LIMIT
+                    break
+                retry["time_limit"] = left
+            solved = milp(**program, options=retry)
 
         if solved.status == _SCIPY_INFEASIBLE and (best is not None or n_cuts):
             # Cuts only bound theta from below and theta has no upper bound, so
@@ -168,6 +175,13 @@ def exact_pwl_milp(
                     "rounds": rounds, "n_cuts": n_cuts, "n_binaries": n_y,
                     "presolve_retries": presolve_retries,
                 },
+            )
+        if solved.status == _SCIPY_LIMIT and limit is None:
+            # No clock was set, so status 1 is an iteration or node limit
+            # this solver never sets. Calling it TIME_LIMIT would hide it.
+            raise RuntimeError(
+                f"HiGHS stopped on {instance.instance_id} at a limit this "
+                f"solver never set: {solved.message}"
             )
         if solved.status not in (_SCIPY_OPTIMAL, _SCIPY_LIMIT):
             raise RuntimeError(
@@ -236,8 +250,7 @@ def exact_pwl_milp(
     return Result(
         solver=NAME, status=status, schedule=schedule, zeta=zeta,
         objective=breakdown,
-        bracket=Bracket(lower=min(proven, total) if status == TIME_LIMIT else proven,
-                        upper=total),
+        bracket=Bracket(lower=proven, upper=total),
         feasibility=classify(instance, schedule),
         timings=timings, detail=detail,
     )
