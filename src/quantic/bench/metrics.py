@@ -3,8 +3,9 @@
 A run succeeds at tolerance ``eps`` when its schedule is feasible without
 repair and its total is within ``eps`` of the instance's optimum, measured
 against the proven lower bound. ``eps = 0`` means the optimum to the
-reference bracket's own width. Instances whose reference bracket is open have
-no gap and no success; they report the width instead.
+round-off. A reference bracket wider than the solvers' own feasibility tolerance
+is open: it has no gap and reports its width instead. Success never depends on
+the bracket being closed: it is read against ``upper``.
 
 Pooling is over solver seeds and instance seeds together, per cell of tier x
 dial combination x solver x encoding x budget.
@@ -12,6 +13,7 @@ dial combination x solver x encoding x budget.
 
 from __future__ import annotations
 
+import hashlib
 import math
 
 import numpy as np
@@ -19,6 +21,7 @@ import polars as pl
 
 from quantic.bench.keys import REF_BRACKET, REF_QUBO_MINIMUM, RUN
 from quantic.bench.store import OK
+from quantic.solvers.base import _BRACKET_RTOL
 
 EPSILONS = (0.0, 0.001, 0.01, 0.05)
 # Two evaluator calls at one schedule agree to round-off; this is not a tolerance.
@@ -68,15 +71,16 @@ def scored(runs: pl.DataFrame) -> pl.DataFrame:
         .join(bracket, on="instance_hash", how="left")
         .join(qubo, on=["instance_hash", "encoding", "zeta_bits"], how="left")
     )
-    # No reference row, or an open one, is no success and no gap -- never a null
-    # that turns a success rate into NaN.
+    # No reference row is no success and no gap -- never a null that turns a
+    # success rate into NaN. "Closed" decides only gap versus width.
     closed = (
         (pl.col("ref_upper") - pl.col("ref_lower"))
-        <= _SAME * pl.max_horizontal(pl.lit(1.0), pl.col("ref_upper").abs())
+        <= _BRACKET_RTOL * pl.max_horizontal(pl.lit(1.0), pl.col("ref_upper").abs())
     ).fill_null(False)
     feasible = (pl.col("store_status") == OK) & pl.col("feasible").fill_null(False)
     out = out.with_columns(
         closed.alias("ref_closed"),
+        (pl.col("ref_upper") - pl.col("ref_lower")).alias("ref_width"),
         pl.when(feasible & closed)
         .then(_rounded((pl.col("total") - pl.col("ref_lower")) / pl.col("ref_lower").abs()))
         .alias("gap"),
@@ -93,7 +97,7 @@ def scored(runs: pl.DataFrame) -> pl.DataFrame:
             eps * pl.col("ref_lower").abs(), _SAME * pl.col("ref_upper").abs()
         )
         out = out.with_columns(
-            (feasible & closed & (pl.col("total") <= target)).alias(f"ok_{eps}")
+            (feasible & (pl.col("total") <= target)).fill_null(False).alias(f"ok_{eps}")
         )
     return out
 
@@ -109,22 +113,44 @@ def _bootstrap_tts(ok: np.ndarray, t_run: float, rng: np.random.Generator):
     return (None if np.isinf(lo) else float(lo)), (None if np.isinf(hi) else float(hi))
 
 
+def _cell_rng(seed: int, keys: tuple) -> np.random.Generator:
+    """One generator per cell, so an interval does not depend on the other cells."""
+    digest = hashlib.sha256(repr(keys).encode("utf-8")).digest()
+    return np.random.default_rng([seed, int.from_bytes(digest[:8], "big")])
+
+
+def _success(group: pl.DataFrame, eps: float, t_run: float, rng) -> dict:
+    ok = group[f"ok_{eps}"].to_numpy().astype(float)
+    p = float(ok.mean()) if ok.size else 0.0
+    lo, hi = _bootstrap_tts(ok, t_run, rng)
+    return {
+        "p_success": p,
+        "tts99_s": tts99(t_run, p),
+        "tts99_lo_s": lo,
+        "tts99_hi_s": hi,
+        "censored_above_s": None if p > 0 else (group["budget_s"][0] or 0) * group.height,
+    }
+
+
 def cells(runs: pl.DataFrame, *, eps: float = 0.01, seed: int = 0) -> pl.DataFrame:
-    """One row per cell: gap, feasibility, success, TTS with a bootstrap interval."""
+    """One row per cell: gap, feasibility, success, TTS with a bootstrap interval.
+
+    The unsuffixed success columns are at ``eps``; every eps in ``EPSILONS`` also
+    has its own ``<name>_<eps>`` columns.
+    """
     rows = scored(runs)
-    rng = np.random.default_rng(seed)
     out = []
     for keys, group in rows.group_by(CELL, maintain_order=True):
-        ok = group[f"ok_{eps}"].to_numpy().astype(float)
-        p = float(ok.mean()) if ok.size else 0.0
+        rng = _cell_rng(seed, keys)
         t_run = float(group["total_s"].drop_nulls().mean() or 0.0)
-        lo, hi = _bootstrap_tts(ok, t_run, rng)
+        by_eps = {e: _success(group, e, t_run, rng) for e in sorted({*EPSILONS, eps})}
         sampled = group["n_samples"].drop_nulls()
         if sampled.len():
             feasibility = float(group["n_feasible_samples"].sum() / sampled.sum())
         else:
             feasibility = float(group["feasible"].fill_null(False).mean())
         gaps = group["gap"].drop_nulls()
+        open_refs = group.filter(~pl.col("ref_closed") & pl.col("ref_width").is_not_null())
         out.append({
             **dict(zip(CELL, keys, strict=True)),
             "n_runs": group.height,
@@ -133,13 +159,12 @@ def cells(runs: pl.DataFrame, *, eps: float = 0.01, seed: int = 0) -> pl.DataFra
             "gap_median": float(gaps.median()) if gaps.len() else None,
             "gap_q1": float(gaps.quantile(0.25)) if gaps.len() else None,
             "gap_q3": float(gaps.quantile(0.75)) if gaps.len() else None,
+            "ref_width_max": open_refs["ref_width"].max() if open_refs.height else None,
+            "n_open_refs": open_refs["instance_hash"].n_unique(),
             "feasibility": feasibility,
-            "p_success": p,
             "t_run_s": t_run,
-            "tts99_s": tts99(t_run, p),
-            "tts99_lo_s": lo,
-            "tts99_hi_s": hi,
-            "censored_above_s": None if p > 0 else (group["budget_s"][0] or 0) * group.height,
+            **by_eps[eps],
+            **{f"{name}_{e}": v for e, d in by_eps.items() for name, v in d.items()},
             "bps_best": group.filter(pl.col("feasible").fill_null(False))["total_bps"].min(),
             "energy_gap_median": group["energy_gap"].drop_nulls().median(),
             "encoding_regret": group["encoding_regret"].drop_nulls().median(),

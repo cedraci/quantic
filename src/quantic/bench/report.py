@@ -33,20 +33,35 @@ def _has(label: str, dial: str) -> bool:
 
 
 def best_encoding(table: pl.DataFrame) -> pl.DataFrame:
-    """Per (tier, dials, solver, budget), the encoding with the lowest median gap."""
+    """Per (tier, dials, solver, budget), the encoding that reaches the target soonest.
+
+    Ranked by TTS at eps = 1%, censored cells after every uncensored one (by their
+    censored bound), then by median gap.
+    """
     return (
-        table.with_columns(pl.col("gap_median").fill_null(float("inf")).alias("_gap"),
-                           pl.col("tts99_s").fill_null(float("inf")).alias("_tts"))
-        .sort(["_gap", "_tts", "encoding"], nulls_last=True)
+        table.with_columns(
+            pl.col("tts99_s").is_null().alias("_censored"),
+            pl.coalesce("tts99_s", "censored_above_s").fill_null(float("inf")).alias("_tts"),
+            pl.col("gap_median").fill_null(float("inf")).alias("_gap"),
+        )
+        .sort(["_censored", "_tts", "_gap", "encoding"], nulls_last=True)
         .group_by(["tier", "dials", "solver", "budget_s"], maintain_order=True)
         .first()
-        .drop("_gap", "_tts")
+        .drop("_censored", "_tts", "_gap")
     )
 
 
 def _cell_text(row: dict) -> str:
-    gap = "-" if row["gap_median"] is None else f"{100 * row['gap_median']:.2f}%"
-    tts = CENSORED if row["tts99_s"] is None else f"{row['tts99_s']:.3g}s"
+    if row["gap_median"] is not None:
+        gap = f"{100 * row['gap_median']:.2f}%"
+    elif row["ref_width_max"] is not None:
+        gap = f"open, width {row['ref_width_max']:.3g}"
+    else:
+        gap = "-"
+    if row["tts99_s"] is not None:
+        tts = f"{row['tts99_s']:.3g}s"
+    else:
+        tts = f"{CENSORED}, > {row['censored_above_s']:.3g} s"
     enc = f" ({row['encoding']})" if row["encoding"] else ""
     return f"{gap} / {100 * row['feasibility']:.0f}% / {tts}{enc}"
 
