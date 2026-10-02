@@ -4,7 +4,9 @@ import pytest
 
 from quantic.problem.feasibility import classify
 from quantic.problem.objective import evaluate
+from quantic.problem.schedule import Schedule
 from quantic.solvers.base import (
+    HEURISTIC,
     INFEASIBLE,
     OPTIMAL,
     TIME_LIMIT,
@@ -74,13 +76,13 @@ def test_a_result_refuses_a_status_nobody_defined():
         _result(status="probably_fine")
 
 
-@pytest.mark.parametrize("missing", ["schedule", "bracket"])
+@pytest.mark.parametrize("missing", ["schedule", "bracket", "feasibility"])
 def test_an_optimal_result_has_to_carry_what_makes_it_optimal(missing):
     with pytest.raises(ValueError, match="optimal"):
         _result(**{missing: None})
 
 
-@pytest.mark.parametrize("status", [TIME_LIMIT, INFEASIBLE])
+@pytest.mark.parametrize("status", [TIME_LIMIT, INFEASIBLE, HEURISTIC])
 def test_a_result_that_is_not_optimal_may_carry_nothing(status):
     result = _result(
         status=status, schedule=None, objective=None, bracket=None, feasibility=None
@@ -114,3 +116,19 @@ def test_anything_with_a_name_and_a_solve_method_is_a_solver():
 
     assert isinstance(Stub(), Solver)
     assert not isinstance(object(), Solver)
+
+
+def test_an_optimal_result_with_an_open_bracket_is_refused():
+    with pytest.raises(ValueError, match="closed"):
+        _result(bracket=Bracket(lower=0.5, upper=1.0))
+
+
+def test_an_optimal_result_inside_the_tolerance_is_accepted():
+    assert _result(bracket=Bracket(lower=1.0 - 1e-7, upper=1.0)).status == OPTIMAL
+
+
+def test_an_optimal_result_on_a_schedule_that_breaches_a_constraint_is_refused():
+    inst = plain()
+    oversold = Schedule(lots=((3, 3, 3), (1, 1, 1)))
+    with pytest.raises(ValueError, match="feasible"):
+        _result(schedule=oversold, feasibility=classify(inst, oversold))

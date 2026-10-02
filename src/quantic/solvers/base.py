@@ -7,8 +7,8 @@ of what its schedule costs: ``Result.objective`` is
 modelled the objective wrongly shows up as a bracket that does not close
 rather than as a better number.
 
-Section 7.1's energy trace is not here. Neither exact solver has one, and the
-samplers of M4 add it with the first solver that does.
+A sampler's energy trace travels in ``Result.detail["trace"]`` as
+``(seconds_since_start, best_energy)`` pairs; only samplers have one.
 """
 
 from __future__ import annotations
@@ -27,8 +27,11 @@ from quantic.problem.schedule import Schedule
 OPTIMAL = "optimal"
 TIME_LIMIT = "time_limit"
 INFEASIBLE = "infeasible"
+# A schedule from a method that never proves anything: a sampler, a rounding.
+# Not TIME_LIMIT, which says that more time could have produced a proof.
+HEURISTIC = "heuristic"
 
-_STATUSES = (OPTIMAL, TIME_LIMIT, INFEASIBLE)
+_STATUSES = (OPTIMAL, TIME_LIMIT, INFEASIBLE, HEURISTIC)
 
 # A proven lower bound comes out of a solver working to its own tolerance, so
 # it can sit a hair above the value it bounds. Beyond this it is not round-off.
@@ -99,13 +102,30 @@ class Result:
             raise ValueError(
                 f"status must be one of {_STATUSES}, got {self.status!r}"
             )
-        if self.status == OPTIMAL and (self.schedule is None or self.bracket is None):
-            raise ValueError(
-                "an optimal result carries the schedule and the bracket that make "
-                "it optimal"
-            )
+        if self.status == OPTIMAL:
+            self._check_optimal()
         object.__setattr__(self, "timings", MappingProxyType(dict(self.timings)))
         object.__setattr__(self, "detail", MappingProxyType(dict(self.detail)))
+
+    def _check_optimal(self) -> None:
+        """``OPTIMAL`` is a claim, and the result carries its evidence."""
+        if self.schedule is None or self.bracket is None or self.feasibility is None:
+            raise ValueError(
+                "an optimal result carries the schedule, the bracket and the "
+                "feasibility report that make it optimal"
+            )
+        if not self.feasibility.feasible:
+            raise ValueError(
+                f"an optimal result's schedule must be feasible; {self.solver} "
+                f"returned one that breaches {dict(self.feasibility.violations)}"
+            )
+        allowed = _BRACKET_RTOL * max(1.0, abs(self.bracket.upper))
+        if self.bracket.width > allowed:
+            raise ValueError(
+                f"an optimal result's bracket must be closed; {self.solver} "
+                f"returned [{self.bracket.lower!r}, {self.bracket.upper!r}], "
+                f"{self.bracket.width!r} wide against {allowed!r}"
+            )
 
 
 @runtime_checkable

@@ -246,9 +246,13 @@ def test_the_gate_sees_a_program_without_cardinality(ladder, monkeypatch):
         lambda instance: dataclasses.replace(real(instance), cardinality=None),
     )
     found, _ = classical(_instance(ladder, "T0-D2-2026"))
+    # Since M4, Result refuses an OPTIMAL schedule that breaches a constraint, so
+    # the sabotage is caught one step earlier: the gate records the refusal, and
+    # the refusal names the solver and the constraint it breached.
     assert "solves" in found
-    assert found["solves"][0] == "exact_pwl_milp"
-    assert found["solves"][1]["cardinality"] > 0
+    assert "exact_pwl_milp returned one that breaches" in found["solves"]
+    assert "'cardinality': " in found["solves"]
+    assert "'cardinality': 0.0" not in found["solves"]
 
 
 def test_the_gate_sees_a_cut_with_the_wrong_sign(ladder, monkeypatch):
