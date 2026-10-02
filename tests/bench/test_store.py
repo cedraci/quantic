@@ -30,12 +30,18 @@ def test_a_row_with_a_missing_or_unknown_column_is_refused(tmp_path):
 
 
 def test_a_failed_write_leaves_nothing_behind(tmp_path):
-    row = run_row("none", "tabu", 0, 10.0)
+    first = run_row("none", "tabu", 0, 10.0)
+    second = run_row("none", "tabu", 1, 11.0)
     with Store(tmp_path / "s.duckdb") as s:
-        s.write(row)
-        with pytest.raises(duckdb.ConstraintException):
-            s.write(row, [("cd34", 1, 0.0, "feasible", 1.0)])
-        assert s.samples().is_empty()
+        s.write(first, [("ab12", 1, 0.0, "feasible", 1.0)], [(0.1, -1.0)])
+        before = (s.runs(), s.samples(), s.con.execute("SELECT * FROM traces").pl())
+        # The runs and samples inserts succeed; the trace tuple is one value short.
+        with pytest.raises(duckdb.Error):
+            s.write(second, [("cd34", 1, 0.0, "feasible", 1.0)], [(0.2,)])
+        after = (s.runs(), s.samples(), s.con.execute("SELECT * FROM traces").pl())
+        assert s.done_keys() == {first["key"]}
+    for was, now in zip(before, after, strict=True):
+        assert was.equals(now)
 
 
 def test_a_store_of_another_schema_version_is_refused(tmp_path):
