@@ -1,3 +1,4 @@
+import re
 import time
 from pathlib import Path
 
@@ -186,3 +187,25 @@ def test_workers_on_other_code_than_the_rows_name_stop_the_run(tmp_path, monkeyp
     assert code_version(ROOT).commit in str(caught.value)
     with Store(store, read_only=True) as s:
         assert s.runs().is_empty()
+
+
+def test_a_run_reports_its_progress_as_it_goes(tmp_path, capsys):
+    exp = _experiment(tmp_path, """
+[instances]
+tiers = ["T0"]
+dials = ["none", "D1"]
+seeds = [2026]
+
+[solvers.almgren_chriss]
+budgets_s = [1]
+""")
+    run(exp, root=ROOT, store=tmp_path / "s.duckdb", workers=2, allow_dirty=True,
+        progress_every=2)
+    lines = [line for line in capsys.readouterr().out.splitlines()
+             if line.startswith("[bench]")]
+    assert lines, "no progress line"
+    pattern = (r"\[bench\] \d\d:\d\d:\d\d written (\d+) \(killed 0, errors 0\), "
+               r"todo (\d+), rate [\d.]+/min, eta [\d.]+ h")
+    for line in lines:
+        written, todo = map(int, re.fullmatch(pattern, line).groups())
+        assert written + todo == 6  # 2 instances x (bracket, brute force, one run)

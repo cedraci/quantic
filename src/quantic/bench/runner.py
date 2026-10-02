@@ -8,8 +8,10 @@ finished by running the same command again.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +28,9 @@ KILL_MARGIN_S = 30.0
 REFERENCE_DEADLINE_S = 3600.0
 # For the estimate only: a reference's typical cost.
 _REFERENCE_ESTIMATE_S = 1.0
+# A progress line every this many written tasks, or this many seconds, whichever first.
+PROGRESS_EVERY = 100
+PROGRESS_S = 300.0
 
 
 class DirtyTree(RuntimeError):
@@ -92,8 +97,10 @@ def run(
     allow_dirty: bool = False,
     stop_after: int | None = None,
     kill_margin_s: float = KILL_MARGIN_S,
+    progress_every: int = PROGRESS_EVERY,
+    progress_s: float = PROGRESS_S,
 ) -> Summary:
-    """Run every task the store does not hold yet.
+    """Run every task the store does not hold yet, printing progress as it goes.
 
     ``stop_after`` and ``kill_margin_s`` exist for the tests: the first
     interrupts a run partway, the second makes a kill take seconds, not 30.
@@ -111,6 +118,23 @@ def run(
     where = machine()
     versions = json.dumps(packages(), sort_keys=True)
     counts = {"written": 0, "killed": 0, "errors": 0}
+    started = time.monotonic()
+    last = {"at": started, "written": 0}
+
+    def progress() -> None:
+        now = time.monotonic()
+        if (counts["written"] - last["written"] < progress_every
+                and now - last["at"] < progress_s):
+            return
+        last.update(at=now, written=counts["written"])
+        per_min = counts["written"] / max((now - started) / 60, 1e-9)
+        left = len(todo) - counts["written"]
+        print(
+            f"[bench] {dt.datetime.now():%H:%M:%S} written {counts['written']} "
+            f"(killed {counts['killed']}, errors {counts['errors']}), todo {left}, "
+            f"rate {per_min:.1f}/min, eta {left / per_min / 60:.1f} h",
+            flush=True,
+        )
 
     with Store(store) as out:
         def on_done(key: str, task: Task, outcome: Outcome) -> None:
@@ -135,6 +159,7 @@ def run(
             else:
                 raise TypeError(f"unknown outcome {outcome!r}")
             counts["written"] += 1
+            progress()
 
         run_tasks(
             todo, code=code, root=root, n_workers=workers or default_workers(),
