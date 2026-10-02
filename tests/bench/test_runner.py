@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import polars as pl
@@ -145,3 +146,28 @@ def test_an_instance_that_cannot_be_built_is_an_error_row_not_a_crash():
     assert row["store_status"] == ERROR
     assert row["error"].startswith("KeyError")
     assert samples == [] and trace == []
+
+
+def test_a_worker_that_dies_is_an_error_row_not_a_kill(tmp_path):
+    exp = _experiment(tmp_path, """
+[instances]
+tiers = ["T0"]
+dials = ["none"]
+seeds = [2026]
+
+[solvers."tests.bench.stand_ins:Die"]
+budgets_s = [60]
+
+[solvers.almgren_chriss]
+budgets_s = [1]
+""")
+    store = tmp_path / "s.duckdb"
+    started = time.monotonic()
+    summary = run(exp, root=ROOT, store=store, workers=2, allow_dirty=True)
+    assert time.monotonic() - started < 60  # not left to its deadline
+    rows, _ = _frame(store)
+    died = rows.filter(pl.col("solver") == "tests.bench.stand_ins:Die")
+    assert (summary.n_killed, summary.n_errors) == (0, 1)
+    assert died["store_status"].to_list() == [ERROR]
+    assert died["error"].to_list() == ["WorkerDied: exit code 3"]
+    assert rows.filter(pl.col("solver") == "almgren_chriss")["store_status"].to_list() == [OK]

@@ -16,8 +16,8 @@ from pathlib import Path
 from quantic.bench.config import Experiment
 from quantic.bench.execute import machine, packages
 from quantic.bench.keys import REFERENCE, CodeVersion, Task, code_version, expand
-from quantic.bench.pool import run_tasks
-from quantic.bench.store import KILLED, Store, blank_row
+from quantic.bench.pool import Died, Finished, Late, Outcome, run_tasks
+from quantic.bench.store import ERROR, KILLED, OK, Store, blank_row
 
 # A budgeted run is killed at KILL_FACTOR * budget + KILL_MARGIN_S seconds.
 KILL_FACTOR = 3.0
@@ -113,18 +113,27 @@ def run(
     counts = {"written": 0, "killed": 0, "errors": 0}
 
     with Store(store) as out:
-        def on_done(key: str, task: Task, payload, killed: bool) -> None:
-            if killed:
+        def on_done(key: str, task: Task, outcome: Outcome) -> None:
+            if isinstance(outcome, Finished):
+                row, samples, trace = outcome.payload
+                out.write(row, samples, trace)
+                if row["store_status"] != OK:
+                    counts["errors"] += 1
+            elif isinstance(outcome, Late):
                 row = blank_row(key, task, code, where, versions)
                 row["store_status"] = KILLED
                 row["error"] = f"killed after {deadline_s(task, kill_margin_s):.1f} s"
                 out.write(row)
                 counts["killed"] += 1
+            elif isinstance(outcome, Died):
+                # A crash, not the clock: no answer, and no kill either.
+                row = blank_row(key, task, code, where, versions)
+                row["store_status"] = ERROR
+                row["error"] = f"WorkerDied: exit code {outcome.exitcode}"
+                out.write(row)
+                counts["errors"] += 1
             else:
-                row, samples, trace = payload
-                out.write(row, samples, trace)
-                if row["store_status"] != "ok":
-                    counts["errors"] += 1
+                raise TypeError(f"unknown outcome {outcome!r}")
             counts["written"] += 1
 
         run_tasks(
