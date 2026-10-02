@@ -85,6 +85,7 @@ source_modules = [
     "quantic.solvers.classical.milp_model",
     "quantic.solvers.classical.exact_pwl_milp",
     "quantic.solvers.classical.cpsat",
+    "quantic.solvers.classical.almgren_chriss",
 ]
 forbidden_modules = ["quantic.encoding"]
 
