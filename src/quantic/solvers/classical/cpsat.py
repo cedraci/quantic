@@ -139,6 +139,8 @@ def cpsat(instance: Instance, *, budget: Budget | None = None, seed: int = 0) ->
         solver = cp_model.CpSolver()
         solver.parameters.num_workers = 1
         solver.parameters.random_seed = int(seed)
+        # A Ctrl-C ends the run, never a solve that then reports TIME_LIMIT.
+        solver.parameters.catch_sigint_signal = False
         if limit is not None:
             left = limit - (time.perf_counter() - started)
             if left <= 0.0:

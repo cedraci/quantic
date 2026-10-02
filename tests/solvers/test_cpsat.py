@@ -93,3 +93,19 @@ def test_a_program_too_wide_for_64_bit_integers_is_refused_by_type(monkeypatch):
     monkeypatch.setattr(module, "_ROW_LIMIT", 1.0)
     with pytest.raises(module.ScaleOverflow, match=r"2\*\*60"):
         cpsat(cvar())
+
+
+def test_a_ctrl_c_is_never_taken_for_the_clock(monkeypatch):
+    """CP-SAT's own SIGINT handler would end a solve as if its time were up."""
+    seen = []
+
+    class Recording(module.cp_model.CpSolver):
+        def solve(self, model, *args, **kwargs):
+            seen.append(self.parameters.catch_sigint_signal)
+            return super().solve(model, *args, **kwargs)
+
+        Solve = solve
+
+    monkeypatch.setattr(module.cp_model, "CpSolver", Recording)
+    cpsat(plain())
+    assert seen and not any(seen)
