@@ -4,12 +4,12 @@ from pathlib import Path
 import pytest
 
 from quantic.bench import pool as pool_module
-from quantic.bench.keys import RUN, CodeVersion, Task
+from quantic.bench.keys import RUN, Task, code_version
 from quantic.bench.pool import Finished, WorkerStartError, _StartFailures, run_tasks
 from quantic.bench.store import OK
 
 ROOT = Path(__file__).resolve().parents[2]
-CODE = CodeVersion(commit="c0ffee", lock_hash="10c4", dirty=False)
+CODE = code_version(ROOT)
 STAND_INS = "tests.bench.stand_ins"
 
 
@@ -29,7 +29,7 @@ def test_a_result_that_arrives_while_another_is_written_is_credited_not_killed()
         if key == "quick":
             time.sleep(8.0)
 
-    run_tasks([("quick", quick), ("slow", slow)], code=CODE, n_workers=2,
+    run_tasks([("quick", quick), ("slow", slow)], code=CODE, root=ROOT, n_workers=2,
               deadline_s=lambda t: 5.0, on_done=on_done)
     assert isinstance(outcomes["slow"], Finished)
     assert outcomes["slow"].payload[0]["store_status"] == OK
@@ -44,7 +44,7 @@ def test_a_task_whose_worker_died_idle_is_sent_to_a_new_worker():
         if key == "first":
             time.sleep(2.0)  # the worker dies meanwhile, idle
 
-    run_tasks([("first", first), ("second", second)], code=CODE, n_workers=1,
+    run_tasks([("first", first), ("second", second)], code=CODE, root=ROOT, n_workers=1,
               deadline_s=lambda t: 30.0, on_done=on_done)
     assert isinstance(outcomes["second"], Finished)
     assert outcomes["second"].payload[0]["store_status"] == OK
@@ -75,7 +75,7 @@ def test_a_task_that_cannot_be_sent_goes_to_a_new_worker(monkeypatch):
 
     monkeypatch.setattr(pool_module, "_Slot", FirstSlotIsDead)
     outcomes = {}
-    run_tasks([("only", _task("almgren_chriss"))], code=CODE, n_workers=1,
+    run_tasks([("only", _task("almgren_chriss"))], code=CODE, root=ROOT, n_workers=1,
               deadline_s=lambda t: 30.0,
               on_done=lambda key, task, outcome: outcomes.update({key: outcome}))
     assert len(made) == 2

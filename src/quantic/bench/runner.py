@@ -137,7 +137,7 @@ def run(
             counts["written"] += 1
 
         run_tasks(
-            todo, code=code, n_workers=workers or default_workers(),
+            todo, code=code, root=root, n_workers=workers or default_workers(),
             deadline_s=lambda task: deadline_s(task, kill_margin_s), on_done=on_done,
         )
     return Summary(

@@ -20,8 +20,9 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from multiprocessing.connection import wait
+from pathlib import Path
 
-from quantic.bench.keys import CodeVersion, Task
+from quantic.bench.keys import CodeVersion, Task, code_version
 
 _READY = "ready"
 _POLL_S = 0.2
@@ -29,14 +30,16 @@ _MAX_FAILED_STARTS = 3
 
 
 class WorkerStartError(RuntimeError):
-    """Workers keep dying before they can take a task."""
+    """Workers keep dying before they can take a task, or run other code than the rows name."""
 
 
-def _worker(conn, code: CodeVersion) -> None:
+def _worker(conn, code: CodeVersion, root: Path) -> None:
     from quantic.bench.execute import Executor
 
     executor = Executor(code)
-    conn.send(_READY)
+    # What this process imported is what is on disk now, which is not
+    # necessarily what was there when the run started.
+    conn.send((_READY, code_version(root)))
     while True:
         item = conn.recv()
         if item is None:
@@ -46,9 +49,9 @@ def _worker(conn, code: CodeVersion) -> None:
 
 
 class _Slot:
-    def __init__(self, ctx, code: CodeVersion) -> None:
+    def __init__(self, ctx, code: CodeVersion, root: Path) -> None:
         self.conn, child = ctx.Pipe()
-        self.process = ctx.Process(target=_worker, args=(child, code), daemon=True)
+        self.process = ctx.Process(target=_worker, args=(child, code, root), daemon=True)
         self.process.start()
         child.close()
         self.ready = False
@@ -121,24 +124,37 @@ def run_tasks(
     jobs: Iterable[tuple[str, Task]],
     *,
     code: CodeVersion,
+    root: Path,
     n_workers: int,
     deadline_s: Callable[[Task], float],
     on_done: OnDone,
 ) -> None:
-    """Run every job; call ``on_done`` in the main process as each one ends."""
+    """Run every job; call ``on_done`` in the main process as each one ends.
+
+    Every worker, the first and every replacement, reports the code version of
+    ``root`` as it starts; one that differs from ``code`` stops the run before
+    it takes a task, since its rows would name a commit that did not run them.
+    """
     ctx = mp.get_context("spawn")
     pending = deque(jobs)
-    slots = [_Slot(ctx, code) for _ in range(n_workers)]
+    slots = [_Slot(ctx, code, root) for _ in range(n_workers)]
     starts = _StartFailures()
 
     def take(slot: _Slot, message) -> None:
-        if message == _READY:
+        sent, body = message
+        if sent == _READY:
+            if body != code:
+                raise WorkerStartError(
+                    f"a worker started on {body}, but this run's rows name {code}: "
+                    "the code on disk changed while the run was going. Restore it, "
+                    "or start again: new code names new keys"
+                )
             slot.ready = True
             starts.ready()
-        elif slot.job is not None and message[0] == slot.job[0]:
+        elif slot.job is not None and sent == slot.job[0]:
             key, task, _ = slot.job
             slot.job = None
-            on_done(key, task, Finished(message[1]))
+            on_done(key, task, Finished(body))
 
     def drain(slot: _Slot) -> None:
         for message in slot.messages():
@@ -156,7 +172,7 @@ def run_tasks(
                         # it goes back to the front, and no row is written.
                         pending.appendleft((key, task))
                         slot.stop()
-                        slots[i] = _Slot(ctx, code)
+                        slots[i] = _Slot(ctx, code, root)
                         continue
                     slot.job = (key, task, time.monotonic() + deadline_s(task))
 
@@ -178,7 +194,7 @@ def run_tasks(
                     starts.failed(slot.process.exitcode)
                 job, exitcode = slot.job, slot.process.exitcode
                 slot.stop()
-                slots[i] = _Slot(ctx, code)
+                slots[i] = _Slot(ctx, code, root)
                 if job is not None:
                     on_done(job[0], job[1], Died(exitcode) if died else Late())
     finally:

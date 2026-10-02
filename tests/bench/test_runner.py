@@ -6,7 +6,8 @@ import pytest
 
 from quantic.bench import runner as runner_module
 from quantic.bench.config import load
-from quantic.bench.keys import CodeVersion
+from quantic.bench.keys import CodeVersion, code_version
+from quantic.bench.pool import WorkerStartError
 from quantic.bench.runner import DirtyTree, plan, run
 from quantic.bench.store import ERROR, KILLED, OK, Store
 
@@ -171,3 +172,17 @@ budgets_s = [1]
     assert died["store_status"].to_list() == [ERROR]
     assert died["error"].to_list() == ["WorkerDied: exit code 3"]
     assert rows.filter(pl.col("solver") == "almgren_chriss")["store_status"].to_list() == [OK]
+
+
+def test_workers_on_other_code_than_the_rows_name_stop_the_run(tmp_path, monkeypatch):
+    """Every respawn imports quantic from disk; rows must not name a commit it is not."""
+    claimed = CodeVersion(commit="0" * 40, lock_hash="1" * 64, dirty=False)
+    monkeypatch.setattr(runner_module, "code_version", lambda root: claimed)
+    exp = _experiment(tmp_path, SMALL)
+    store = tmp_path / "s.duckdb"
+    with pytest.raises(WorkerStartError) as caught:
+        run(exp, root=ROOT, store=store, workers=2)
+    assert "0" * 40 in str(caught.value)
+    assert code_version(ROOT).commit in str(caught.value)
+    with Store(store, read_only=True) as s:
+        assert s.runs().is_empty()
