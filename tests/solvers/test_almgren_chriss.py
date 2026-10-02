@@ -99,6 +99,7 @@ def test_a_breached_cardinality_is_reported_not_repaired():
         r for inst in tier("T1") if inst.dials.discrete_participation
         for r in [almgren_chriss(inst)] if not r.feasibility.feasible
     ]
+    assert len(breached) > 0
     for r in breached:
         assert set(r.feasibility.violations) >= {"cardinality"}
         assert r.status == HEURISTIC
