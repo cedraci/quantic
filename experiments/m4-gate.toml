@@ -1,0 +1,42 @@
+# The M4 gate (tests/bench/test_m4_gate.py): the M3 ladder's 32 T0-T1 instances.
+# Samplers are capped by samples, not by the clock, so every row is
+# reproducible and the gate can check that it is.
+
+[instances]
+tiers = ["T0", "T1"]
+dials = "all"
+seeds = [2026]
+
+[references]
+qubo_minimum_tiers = ["T0"]
+
+[solvers.almgren_chriss]
+budgets_s = [1]
+
+[solvers.exact_pwl_milp]
+budgets_s = [60]
+
+[solvers.cpsat]
+seeds = [0]
+budgets_s = [60]
+
+[solvers.simulated_annealing]
+encodings = ["binary", "one_hot", "domain_wall"]
+zeta_bits = 8
+seeds = "0..4"
+budgets_s = [600]
+max_samples = 256
+
+[solvers.tabu]
+encodings = ["binary", "one_hot", "domain_wall"]
+zeta_bits = 8
+seeds = "0..2"
+budgets_s = [600]
+max_samples = 32
+
+[solvers.greedy]
+encodings = ["binary", "one_hot", "domain_wall"]
+zeta_bits = 8
+seeds = "0..2"
+budgets_s = [600]
+max_samples = 256

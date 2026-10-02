@@ -1,0 +1,41 @@
+# The M4 crossover study: every free classical solver on T0-T1, against proven
+# brackets. M4 design section 10. Run it with
+#   quantic bench plan experiments/m4-crossover.toml --store <path>
+#   quantic bench run  experiments/m4-crossover.toml --store <path>
+# and rerun the second command after any interruption.
+
+[instances]
+tiers = ["T0", "T1"]
+dials = "all"
+seeds = "2026..2030"
+
+[references]
+qubo_minimum_tiers = ["T0"]
+
+[solvers.almgren_chriss]
+budgets_s = [1]
+
+[solvers.exact_pwl_milp]
+budgets_s = [0.1, 1, 10, 60]
+
+[solvers.cpsat]
+seeds = "0..4"
+budgets_s = [0.1, 1, 10, 60]
+
+[solvers.simulated_annealing]
+encodings = ["binary", "one_hot", "domain_wall"]
+zeta_bits = 8
+seeds = "0..49"
+budgets_s = [0.1, 1, 10, 60]
+
+[solvers.tabu]
+encodings = ["binary", "one_hot", "domain_wall"]
+zeta_bits = 8
+seeds = "0..49"
+budgets_s = [0.1, 1, 10, 60]
+
+[solvers.greedy]
+encodings = ["binary", "one_hot", "domain_wall"]
+zeta_bits = 8
+seeds = "0..49"
+budgets_s = [0.1, 1, 10, 60]
