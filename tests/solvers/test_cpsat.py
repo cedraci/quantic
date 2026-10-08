@@ -109,3 +109,16 @@ def test_a_ctrl_c_is_never_taken_for_the_clock(monkeypatch):
     monkeypatch.setattr(module.cp_model, "CpSolver", Recording)
     cpsat(plain())
     assert seen and not any(seen)
+
+
+def test_presolve_never_proves_a_wrong_optimum():
+    """OR-Tools 9.15's inclusion presolve, on this instance's variance cuts at
+    2**30 ticks, reported OPTIMAL at 17.98 while enumeration finds 14.34 (the
+    M4 study's bracket check, T0 D2 seed 2030)."""
+    from quantic.bench.instances import InstanceCache
+
+    inst = InstanceCache().get("T0", "D2", 2030)
+    found = cpsat(inst)
+    optimum = brute_force(inst).objective.total
+    assert found.bracket.lower <= optimum * (1 + REL)
+    assert found.objective.total == pytest.approx(optimum, rel=REL)

@@ -141,6 +141,9 @@ def cpsat(instance: Instance, *, budget: Budget | None = None, seed: int = 0) ->
         solver.parameters.random_seed = int(seed)
         # A Ctrl-C ends the run, never a solve that then reports TIME_LIMIT.
         solver.parameters.catch_sigint_signal = False
+        # OR-Tools 9.15's inclusion presolve proves a wrong optimum on variance
+        # cuts at this tick scale (T0 D2 seed 2030: 17.98 where 14.34 exists).
+        solver.parameters.presolve_inclusion_work_limit = 0
         if limit is not None:
             left = limit - (time.perf_counter() - started)
             if left <= 0.0:
