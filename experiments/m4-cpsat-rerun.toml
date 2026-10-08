@@ -1,0 +1,16 @@
+# CP-SAT again, with inclusion presolve off: in m4-crossover OR-Tools 9.15 proved
+# a wrong optimum on T0 D2 seed 2030 (bracket check). Same instances, seeds and
+# budgets as m4-crossover's [solvers.cpsat]; its own store, the references again.
+#   quantic bench run experiments/m4-cpsat-rerun.toml --store <path>
+
+[instances]
+tiers = ["T0", "T1"]
+dials = "all"
+seeds = "2026..2030"
+
+[references]
+qubo_minimum_tiers = []
+
+[solvers.cpsat]
+seeds = "0..4"
+budgets_s = [0.1, 1, 10, 60]
