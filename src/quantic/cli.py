@@ -376,6 +376,13 @@ def bench_plan(
         f"about {p.estimate_s / 3600:.1f} h on {p.n_workers} workers "
         "(every budget spent in full: an upper estimate)"
     )
+    if p.n_over_max or p.n_over_noisy:
+        console.print(
+            f"left out of the plan: {p.n_over_max} quantum tasks above max_qubits, "
+            f"{p.n_over_noisy} full noisy runs above noisy_max_qubits"
+        )
+    if p.n_hardware:
+        console.print(f"{p.n_hardware} hardware tasks wait for the IBM lane")
 
 
 @bench_app.command("run")
