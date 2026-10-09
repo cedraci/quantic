@@ -24,6 +24,8 @@ from quantic.data.manifest import MANIFEST_FILENAME
 from quantic.data.request import default_request
 from quantic.data.schemas import validate_values
 from quantic.data.synth import SynthConfig, generate_bundle
+from quantic.solvers.quantum.ibm import NoAccount
+from quantic.solvers.quantum.quota import QuotaBusy, QuotaExhausted
 
 app = typer.Typer(help="Quantic: quantum vs classical liquidation benchmarking.")
 data_app = typer.Typer(help="Dataset bundles.")
@@ -393,19 +395,30 @@ def bench_run(
     allow_dirty: Annotated[
         bool, typer.Option("--allow-dirty", help="Run on uncommitted changes; recorded.")
     ] = False,
+    no_hardware: Annotated[
+        bool, typer.Option("--no-hardware", help="Run everything except IBM hardware jobs.")
+    ] = False,
+    repeat_hardware: Annotated[
+        bool, typer.Option("--repeat-hardware",
+                           help="Submit hardware tasks the store already holds, again.")
+    ] = False,
 ) -> None:
     """Run every task the store does not hold yet. Safe to interrupt and rerun."""
     try:
         s = bench_runner.run(
             _experiment(config), root=_REPO_ROOT, store=store, workers=workers,
-            allow_dirty=allow_dirty,
+            allow_dirty=allow_dirty, no_hardware=no_hardware,
+            repeat_hardware=repeat_hardware,
         )
-    except (bench_runner.DirtyTree, StoreBusy, SchemaMismatch, WorkerStartError) as exc:
+    except (bench_runner.DirtyTree, StoreBusy, SchemaMismatch, WorkerStartError,
+            QuotaExhausted, QuotaBusy, NoAccount) as exc:
         _say_why(exc)
         raise typer.Exit(code=1) from exc
     console.print(
         f"wrote {s.n_written} rows: {s.n_killed} killed, {s.n_errors} errors"
     )
+    if s.hardware_stop:
+        console.print(f"hardware lane stopped: {s.hardware_stop}")
 
 
 @bench_app.command("report")
