@@ -3,6 +3,7 @@ import math
 import polars as pl
 import pytest
 
+from quantic.bench import metrics
 from quantic.bench.keys import REF_QUBO_MINIMUM, REFERENCE, RUN, CodeVersion, Task
 from quantic.bench.metrics import cells, scored, tts99
 from quantic.bench.report import bracket_check, dial_effects, report
@@ -287,3 +288,21 @@ def test_killed_and_failed_runs_count_against_success_and_never_succeed(tmp_path
     assert (got["n_runs"], got["n_killed"], got["n_errors"]) == (4, 1, 1)
     assert got["p_success"] == 0.5
     assert got["n_missing_refs"] == 0
+
+
+def test_a_cell_without_a_sample_cap_keeps_its_m4_bootstrap_seed(tmp_path):
+    """max_samples joined CELL, but M4 intervals were seeded from five fields."""
+    totals = [10.0 if i % 5 in (0, 2, 3) else 12.0 for i in range(47)]
+    rows = [ref("none", 10.0, 10.0)] + [
+        run_row("none", "sa", s, t) for s, t in enumerate(totals)
+    ]
+    with Store(write(tmp_path / "s.duckdb", rows), read_only=True) as s:
+        runs = s.runs()
+    got = cells(runs).row(0, named=True)
+    scores = scored(runs)
+    rng = metrics._cell_rng(0, ("T0", "none", "sa", None, 1.0))
+    for eps in sorted(metrics.EPSILONS):           # one generator, drawn in eps order
+        ok = scores[f"ok_{eps}"].to_numpy().astype(float)
+        lo, hi = metrics._bootstrap_tts(ok, 0.5, rng)
+        assert (lo, hi) == (got[f"tts99_lo_s_{eps}"], got[f"tts99_hi_s_{eps}"])
+    assert got["tts99_lo_s"] is not None

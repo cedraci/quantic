@@ -158,7 +158,8 @@ def cells(runs: pl.DataFrame, *, eps: float = 0.01, seed: int = 0) -> pl.DataFra
     rows = scored(runs)
     out = []
     for keys, group in rows.group_by(CELL, maintain_order=True):
-        rng = _cell_rng(seed, keys)
+        # A cell without a sample cap keeps its M4-era key, so M4 intervals reproduce.
+        rng = _cell_rng(seed, keys[:5] if keys[5] is None else keys)
         t_run = float(group["total_s"].drop_nulls().mean() or 0.0)
         by_eps = {e: _success(group, e, t_run, rng) for e in sorted({*EPSILONS, eps})}
         sampled = group["n_samples"].drop_nulls()
