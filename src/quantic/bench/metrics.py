@@ -20,14 +20,14 @@ import numpy as np
 import polars as pl
 
 from quantic.bench.keys import REF_BRACKET, REF_QUBO_MINIMUM, RUN
-from quantic.bench.store import OK
+from quantic.bench.store import OK, PENDING
 from quantic.solvers.base import _BRACKET_RTOL
 
 EPSILONS = (0.0, 0.001, 0.01, 0.05)
 # Two evaluator calls at one schedule agree to round-off; this is not a tolerance.
 _SAME = 1e-9
 _BOOTSTRAP = 1000
-CELL = ["tier", "dials", "solver", "encoding", "budget_s"]
+CELL = ["tier", "dials", "solver", "encoding", "budget_s", "max_samples"]
 INSTANCE = ["tier", "dials", "instance_seed"]
 
 
@@ -154,6 +154,7 @@ def cells(runs: pl.DataFrame, *, eps: float = 0.01, seed: int = 0) -> pl.DataFra
     The unsuffixed success columns are at ``eps``; every eps in ``EPSILONS`` also
     has its own ``<name>_<eps>`` columns.
     """
+    runs = runs.filter(pl.col("store_status") != PENDING)
     rows = scored(runs)
     out = []
     for keys, group in rows.group_by(CELL, maintain_order=True):

@@ -25,7 +25,7 @@ from quantic.data.request import default_request
 from quantic.data.schemas import validate_values
 from quantic.data.synth import SynthConfig, generate_bundle
 from quantic.solvers.quantum.ibm import NoAccount
-from quantic.solvers.quantum.quota import QuotaBusy, QuotaExhausted
+from quantic.solvers.quantum.quota import QuotaBusy, QuotaExhausted, default_path
 
 app = typer.Typer(help="Quantic: quantum vs classical liquidation benchmarking.")
 data_app = typer.Typer(help="Dataset bundles.")
@@ -427,10 +427,12 @@ def bench_report_command(
     store: Annotated[Path, typer.Argument(help="The DuckDB store.")],
     out: Annotated[Path, typer.Option("--out")],
     commit: Annotated[str | None, typer.Option("--commit")] = None,
+    ledger: Annotated[Path | None, typer.Option("--ledger")] = None,
 ) -> None:
     """Write the crossover tables, dial effects, bracket check and failed references."""
     try:
-        written = bench_report.report(store, out, commit=commit)
+        written = bench_report.report(store, out, commit=commit,
+                                      ledger_path=ledger or default_path())
     except (FileNotFoundError, StoreBusy, SchemaMismatch, bench_report.CommitChoice) as exc:
         _say_why(exc)
         raise typer.Exit(code=1) from exc
