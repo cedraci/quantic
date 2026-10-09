@@ -15,8 +15,6 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-import psutil
-
 QUOTA_CEILING_S = 300.0
 WINDOW_S = 28 * 24 * 3600
 PENDING = "pending"
@@ -80,29 +78,10 @@ class Ledger:
                 os.write(fd, str(os.getpid()).encode())
             finally:
                 os.close(fd)
-        except FileExistsError as err:
-            # Check if the process holding the lock still exists
-            try:
-                pid_str = lock_path.read_text(encoding="utf-8").strip()
-                pid = int(pid_str)
-                if psutil.pid_exists(pid):
-                    raise QuotaBusy(
-                        f"another hardware run holds {lock_path}; if none does, delete the file"
-                    ) from err
-            except (ValueError, OSError):
-                pass
-            # Process doesn't exist or lock file is corrupted, delete it and try again
-            lock_path.unlink(missing_ok=True)
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                try:
-                    os.write(fd, str(os.getpid()).encode())
-                finally:
-                    os.close(fd)
-            except FileExistsError as err2:
-                raise QuotaBusy(
-                    f"another hardware run holds {lock_path}; if none does, delete the file"
-                ) from err2
+        except FileExistsError:
+            raise QuotaBusy(
+                f"another hardware run holds {lock_path}; if none does, delete the file"
+            ) from None
 
         try:
             yield
@@ -134,9 +113,9 @@ class Ledger:
             raise ValueError(
                 f"per_job_cap_s must be finite and non-negative, got {per_job_cap_s}"
             )
-        if not math.isfinite(min_job_s) or min_job_s < 0 or min_job_s < 1:
+        if not math.isfinite(min_job_s) or min_job_s < 1:
             raise ValueError(
-                f"min_job_s must be finite, non-negative, and >= 1, got {min_job_s}"
+                f"min_job_s must be finite and >= 1, got {min_job_s}"
             )
         if ibm_consumed_s is not None and (
             not math.isfinite(ibm_consumed_s) or ibm_consumed_s < 0

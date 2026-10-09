@@ -126,6 +126,32 @@ def test_the_lock_is_released_even_when_the_body_raises(tmp_path):
     assert not lock_path.exists()
 
 
+def test_a_stale_lock_file_with_invalid_content_is_not_deleted(tmp_path):
+    """A lock file with invalid content (empty or non-numeric) is still treated as held."""
+    led = ledger(tmp_path)
+    lock_path = tmp_path / "q.json.lock"
+
+    # Create a lock file with empty content
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(QuotaBusy), led.lock():
+        pass
+
+    # Verify the lock file was NOT deleted
+    assert lock_path.exists()
+    assert lock_path.read_text(encoding="utf-8") == ""
+
+    # Test with non-numeric content as well
+    lock_path.write_text("not_a_pid", encoding="utf-8")
+
+    with pytest.raises(QuotaBusy), led.lock():
+        pass
+
+    assert lock_path.exists()
+    assert lock_path.read_text(encoding="utf-8") == "not_a_pid"
+
+
 # Non-finite and negative inputs tests (b)
 @pytest.mark.parametrize("bad_cap", [float("nan"), float("inf"), -1.0])
 def test_invalid_cap_s_raises_value_error(tmp_path, bad_cap):
