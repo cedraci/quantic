@@ -228,3 +228,13 @@ def test_grant_below_minimum_is_refused(tmp_path):
     with pytest.raises(QuotaExhausted, match="10.9"):
         led.allowance(cap_s=300, per_job_cap_s=60, min_job_s=10.5,
                       ibm_consumed_s=None, now=NOW)
+
+
+def test_confirm_renames_a_reservation_and_keeps_its_allowance(tmp_path):
+    led = ledger(tmp_path)
+    led.add_pending("reserved:k", "ibm_fez", "k", 30, now=NOW)
+    led.confirm("reserved:k", "job-9")
+    assert [e.job_id for e in led.entries()] == ["job-9"]
+    assert led.used_s(NOW) == 30
+    with pytest.raises(KeyError):
+        led.confirm("reserved:k", "job-10")

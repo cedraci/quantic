@@ -112,17 +112,36 @@ class _Lane:
         self.client.use(backend)
         routed = route(to_ising(enc.qubo), angles, backend)
         depth, two = routed_stats(routed)
+        # Reserve first: if the process dies inside submit, the allowance still
+        # counts against the window. confirm() swaps in the real job id after.
+        reservation = f"reserved:{key}"
+        self.ledger.add_pending(reservation, params["device"], key, allowance,
+                                now=self.now())
         job_id = self.client.submit(routed, q.shots, allowance)
-        self.ledger.add_pending(job_id, params["device"], key, allowance, now=self.now())
-        row = blank_row(key, task, self.code, self.where, self.versions)
-        row.update(store_status=PENDING, job_id=job_id, device=params["device"],
-                   backend="ibm", angle_key=angle, reps=params["reps"], shots=q.shots,
-                   routed_depth=depth, routed_2q=two, instance_hash=instance.content_hash,
-                   notional=instance.notional())
+        self.ledger.confirm(reservation, job_id)
+        row = self.pending_row(key, task, job_id, instance, angle, params, (depth, two))
         # replace, not write: under --repeat-hardware, or after a killed row, the
         # key may already be stored, and the new job's row must take its place.
         self.store.replace(row)
         self.finish(task, row, job_id)
+
+    def pending_row(self, key, task, job_id, instance, angle, params, routed):
+        depth, two = routed
+        row = blank_row(key, task, self.code, self.where, self.versions)
+        row.update(store_status=PENDING, job_id=job_id, device=params["device"],
+                   backend="ibm", angle_key=angle, reps=params["reps"],
+                   shots=self.settings.shots, routed_depth=depth, routed_2q=two,
+                   instance_hash=instance.content_hash, notional=instance.notional())
+        return row
+
+    def reconcile(self, entry, key: str, task: Task) -> None:
+        """A job the ledger knows but the store never recorded: record it, collect it."""
+        instance, enc = self.encoded(task)
+        angle, params, _ = self.angles_for(task, enc)
+        row = self.pending_row(key, task, entry.job_id, instance, angle, params,
+                               (None, None))
+        self.store.replace(row)
+        self.finish(task, row, entry.job_id)
 
 
 def _task_of(row: dict) -> Task:
@@ -139,12 +158,24 @@ def run_hardware(tasks, *, store, settings, code, where, versions, angles_dir,
                  client=client if client is not None else RuntimeClient(),
                  ledger=ledger if ledger is not None else Ledger(), now=now)
     with lane.ledger.lock():
+        handled: set[str] = set()
         for row in lane.store.pending_hardware().iter_rows(named=True):
             lane.finish(_task_of(row), dict(row), row["job_id"])
             lane.summary.n_collected += 1
+            handled.add(row["identity"])
+        by_key = {key: task for key, task in tasks}
+        for entry in lane.ledger.pending():
+            base = entry.task_key.split("#r")[0]
+            if (entry.job_id.startswith("reserved:") or base not in by_key
+                    or lane.store.has_job(entry.job_id)):
+                continue
+            task = by_key[base]
+            lane.reconcile(entry, entry.task_key, task)
+            lane.summary.n_collected += 1
+            handled.add(task.identity())
         done = set() if repeat else lane.store.identities("qaoa_ibm")
         for key, task in tasks:
-            if task.identity() in done:
+            if task.identity() in done or task.identity() in handled:
                 lane.summary.n_skipped_done += 1
                 continue
             if not lane.store.gate_passed(gate_for(task, settings).identity()):
@@ -153,6 +184,8 @@ def run_hardware(tasks, *, store, settings, code, where, versions, angles_dir,
                       f"{task.instance_seed} {task.encoding}: run the qaoa_noisy gate first",
                       flush=True)
                 continue
+            if repeat:
+                key = lane.store.repeat_key(key, task.identity())
             try:
                 lane.submit(key, task)
             except QuotaExhausted as exc:

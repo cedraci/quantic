@@ -36,15 +36,19 @@ seeds = "0..1"
 """
 
 
-@pytest.fixture
-def study(tmp_path):
+def _study(tmp_path, text=HW):
     path = tmp_path / "e.toml"
-    path.write_text(HW, encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     exp = load(path)
     store = tmp_path / "s.duckdb"
     # Train and gate, no hardware yet.
     run(exp, root=ROOT, store=store, workers=1, allow_dirty=True, no_hardware=True)
     return exp, store, Ledger(tmp_path / "q.json")
+
+
+@pytest.fixture
+def study(tmp_path):
+    return _study(tmp_path)
 
 
 def _lane(exp, store, ledger, client, **kw):
@@ -152,3 +156,91 @@ def test_a_locked_ledger_stops_the_lane_before_anything_is_submitted(study):
     with pytest.raises(QuotaBusy):
         _lane(exp, store, ledger, client)
     assert client.submitted == []
+
+
+def _again(exp, store, ledger, client, **kw):
+    return run(exp, root=ROOT, store=store, workers=1, allow_dirty=True,
+               client=client, ledger=ledger, **kw)
+
+
+def test_bench_run_collects_a_pending_job_instead_of_submitting_another(tmp_path):
+    exp, store, ledger = _study(tmp_path, HW.replace('"0..1"', '"0..0"'))
+
+    class Crash(LocalClient):
+        def counts(self, job_id):
+            raise ConnectionError("the network went away")
+
+    client = Crash()
+    with pytest.raises(ConnectionError):
+        _again(exp, store, ledger, client)
+    assert _hw_rows(store)["store_status"].to_list() == [PENDING]
+    client.counts = LocalClient.counts.__get__(client)
+    got = _again(exp, store, ledger, client)
+    assert got.n_written == 1
+    assert _hw_rows(store)["store_status"].to_list() == [OK]
+    assert len(client.submitted) == 1
+
+
+def test_repeat_hardware_keeps_the_earlier_row_under_the_same_commit(study):
+    exp, store, ledger = study
+    client = LocalClient()
+    _again(exp, store, ledger, client)
+    first = _hw_rows(store).sort("key")
+    _again(exp, store, ledger, client, repeat_hardware=True)
+    rows = _hw_rows(store)
+    assert rows.height == 4 and (rows["store_status"] == OK).all()
+    assert rows.group_by("identity").len()["len"].to_list() == [2, 2]
+    assert len(client.submitted) == 4
+    kept = rows.filter(~rows["key"].str.contains("#r")).sort("key")
+    assert kept["job_id"].to_list() == first["job_id"].to_list()
+
+
+def test_the_allowance_is_reserved_before_the_job_is_submitted(study):
+    exp, store, ledger = study
+
+    class Refuse(LocalClient):
+        def submit(self, routed, shots, max_execution_time_s):
+            raise RuntimeError("submit died")
+
+    with pytest.raises(RuntimeError):
+        _lane(exp, store, ledger, Refuse())
+    [entry] = ledger.pending()
+    assert entry.job_id.startswith("reserved:") and entry.max_execution_time_s == 30
+    assert ledger.used_s(entry.submitted_at) == 30
+    # A normal job afterwards: real ids only, none of its own reservations left.
+    _lane(exp, store, ledger, LocalClient())
+    ids = [e.job_id for e in ledger.entries()]
+    assert sum(i.startswith("reserved:") for i in ids) == 1 and len(ids) == 3
+
+
+def test_a_ledger_job_with_no_store_row_is_collected_not_resubmitted(study):
+    exp, store, ledger = study
+    client = LocalClient()
+
+    class Flaky:
+        def __init__(self, inner):
+            self.inner, self.armed = inner, True
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def replace(self, *a, **k):
+            if self.armed:
+                self.armed = False
+                raise RuntimeError("died before the store row")
+            return self.inner.replace(*a, **k)
+
+    code = code_version(ROOT)
+    tasks = [(t.key(code), t) for t in expand(exp) if is_hardware(t)]
+    from quantic.bench.angles import angles_dir_for
+
+    with Store(store) as s, pytest.raises(RuntimeError):
+        run_hardware(tasks, store=Flaky(s), settings=exp.quantum, code=code, where="here",
+                     versions="{}", angles_dir=angles_dir_for(store), client=client,
+                     ledger=ledger)
+    assert _hw_rows(store).height == 0 and len(ledger.pending()) == 1
+    got = _lane(exp, store, ledger, client)
+    assert got.n_collected == 1
+    assert len(client.submitted) == 2
+    rows = _hw_rows(store)
+    assert (rows["store_status"] == OK).all() and rows["job_id"].n_unique() == 2

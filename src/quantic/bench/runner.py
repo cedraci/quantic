@@ -142,14 +142,16 @@ def run(
             "tracked files differ from HEAD, so rows would name a commit that did "
             "not produce them. Commit, or pass --allow-dirty (recorded on every row)"
         )
-    _, todo = _todo(experiment, code, store)
+    capped, todo = _todo(experiment, code, store)
     if stop_after is not None:
         todo = todo[:stop_after]
     classical = [(k, t) for k, t in todo if not is_quantum(t)]
     training = [(k, t) for k, t in todo if t.solver == REF_QAOA_ANGLES]
     sampling = [(k, t) for k, t in todo
                 if is_quantum(t) and t.solver != REF_QAOA_ANGLES and not is_hardware(t)]
-    hardware = [(k, t) for k, t in todo if is_hardware(t)]
+    # --repeat-hardware: every planned hardware task, stored or not.
+    hardware = [(k, t) for k, t in (capped.kept if repeat_hardware else todo)
+                if is_hardware(t)]
 
     where = machine()
     versions = json.dumps(packages(), sort_keys=True)
@@ -210,7 +212,7 @@ def run(
                     deadline_s=lambda task: deadline_s(task, kill_margin_s, q),
                     on_done=on_done, context=context,
                 )
-        if hardware and not no_hardware:
+        if (hardware or out.pending_hardware().height) and not no_hardware:
             from quantic.bench.hardware import run_hardware
 
             lane = run_hardware(

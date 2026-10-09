@@ -54,6 +54,14 @@ def _sampler(mode, max_execution_time_s: int):
     return Sampler(mode=mode, options={"max_execution_time": int(max_execution_time_s)})
 
 
+def _status_name(job) -> str:
+    try:
+        status = job.status()
+    except Exception:
+        return ""
+    return str(getattr(status, "name", status)).split(".")[-1].upper()
+
+
 class RuntimeClient:
     def __init__(self) -> None:
         from qiskit_ibm_runtime import QiskitRuntimeService
@@ -92,7 +100,11 @@ class RuntimeClient:
         try:
             result = job.result()
         except Exception as exc:
-            raise JobFailed(f"job {job_id} failed: {exc}") from exc
+            # Only a job IBM reports as errored or cancelled has failed; a dropped
+            # connection must leave the job pending to be collected later.
+            if _status_name(job) in ("ERROR", "CANCELLED"):
+                raise JobFailed(f"job {job_id} failed: {exc}") from exc
+            raise
         return dict(result[0].data.meas.get_counts())
 
     def usage_s(self, job_id: str) -> float:

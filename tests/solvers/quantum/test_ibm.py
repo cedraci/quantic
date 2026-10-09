@@ -40,3 +40,42 @@ def test_a_failed_job_raises_with_its_message():
 ])
 def test_an_unreadable_usage_answer_is_none_not_zero(answer, expected):
     assert consumed_from_usage(answer) == expected
+
+
+class _StubJob:
+    def __init__(self, status):
+        self._status = status
+
+    def result(self):
+        raise ConnectionError("the network went away")
+
+    def status(self):
+        return self._status
+
+
+class _StubService:
+    def __init__(self, status):
+        self._job = _StubJob(status)
+
+    def job(self, job_id):
+        return self._job
+
+
+def _runtime_client(status):
+    from quantic.solvers.quantum.ibm import RuntimeClient
+
+    client = RuntimeClient.__new__(RuntimeClient)
+    client.service = _StubService(status)
+    return client
+
+
+@pytest.mark.parametrize("status", ["ERROR", "CANCELLED"])
+def test_a_job_that_errored_or_was_cancelled_is_a_failed_job(status):
+    with pytest.raises(JobFailed):
+        _runtime_client(status).counts("j")
+
+
+@pytest.mark.parametrize("status", ["RUNNING", "QUEUED"])
+def test_any_other_exception_leaves_the_job_pending(status):
+    with pytest.raises(ConnectionError):
+        _runtime_client(status).counts("j")

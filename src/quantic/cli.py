@@ -400,7 +400,8 @@ def bench_run(
     ] = False,
     repeat_hardware: Annotated[
         bool, typer.Option("--repeat-hardware",
-                           help="Submit hardware tasks the store already holds, again.")
+                           help="Submit every planned hardware task again, even if "
+                                "stored; earlier rows are kept.")
     ] = False,
 ) -> None:
     """Run every task the store does not hold yet. Safe to interrupt and rerun."""

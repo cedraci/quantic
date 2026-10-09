@@ -162,3 +162,13 @@ class Ledger:
                 self._save(entries)
                 return
         raise KeyError(f"no job {job_id!r} in the ledger at {self.path}")
+
+    def confirm(self, reservation_id: str, job_id: str) -> None:
+        """Give a reservation made before submitting its real job id."""
+        entries = self.entries()
+        for i in range(len(entries) - 1, -1, -1):
+            if entries[i].job_id == reservation_id:
+                entries[i] = replace(entries[i], job_id=job_id)
+                self._save(entries)
+                return
+        raise KeyError(f"no reservation {reservation_id!r} in the ledger at {self.path}")

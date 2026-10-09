@@ -242,6 +242,23 @@ class Store:
         ).fetchall()
         return {r[0] for r in found}
 
+    def has_job(self, job_id: str) -> bool:
+        return self.con.execute(
+            "SELECT 1 FROM runs WHERE job_id = ? LIMIT 1", [job_id]).fetchone() is not None
+
+    def repeat_key(self, key: str, identity: str) -> str:
+        """``key`` if unstored, else ``key#r<n>``: a repeat keeps the earlier paid row."""
+        def taken(k):
+            return self.con.execute(
+                "SELECT 1 FROM runs WHERE key = ? LIMIT 1", [k]).fetchone() is not None
+        if not taken(key):
+            return key
+        n = self.con.execute(
+            "SELECT count(*) FROM runs WHERE identity = ?", [identity]).fetchone()[0]
+        while taken(f"{key}#r{n}"):
+            n += 1
+        return f"{key}#r{n}"
+
     def gate_passed(self, identity: str) -> bool:
         return self.con.execute(
             "SELECT 1 FROM runs WHERE identity = ? AND kind = 'gate' AND store_status = ? "
