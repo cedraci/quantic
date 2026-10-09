@@ -1,0 +1,56 @@
+# The M5 study: CVaR-QAOA on the T0 cells without CVaR, noiseless, under a
+# simulated IBM noise model, and on real IBM hardware -- M5 design section 9.
+#   quantic bench run experiments/m5-qaoa.toml --store <path> --no-hardware
+#   quantic bench run experiments/m5-qaoa.toml --store <path>      (hardware, with go-ahead)
+
+[instances]
+tiers = ["T0"]
+dials = ["none", "D1", "D2", "D4", "D1+D2", "D1+D4", "D2+D4", "D1+D2+D4"]
+seeds = "2026..2030"
+
+[references]
+qubo_minimum_tiers = ["T0"]
+
+[quantum]
+reps = 2
+alpha = 0.25
+maxiter = 200
+shots = 1000
+max_qubits = 28
+noisy_max_qubits = 20
+gate_shots = 32
+device = "ibm_fez"
+quota_cap_s = 300
+
+[solvers.qaoa_ideal]
+encodings = ["binary", "domain_wall"]
+seeds = "0..19"
+
+[solvers.qaoa_noisy]
+encodings = ["binary", "domain_wall"]
+seeds = "0..4"
+
+[solvers.qaoa_ibm]
+encodings = ["binary"]
+seeds = "0..0"
+
+[solvers.simulated_annealing]
+encodings = ["binary", "domain_wall"]
+seeds = "0..19"
+max_samples = 1000
+budgets_s = [3600]
+
+[solvers.tabu]
+encodings = ["binary", "domain_wall"]
+seeds = "0..19"
+max_samples = 1000
+budgets_s = [3600]
+
+[solvers.greedy]
+encodings = ["binary", "domain_wall"]
+seeds = "0..19"
+max_samples = 1000
+budgets_s = [3600]
+
+[solvers.exact_pwl_milp]
+budgets_s = [1]
