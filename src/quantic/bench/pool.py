@@ -33,10 +33,10 @@ class WorkerStartError(RuntimeError):
     """Workers keep dying before they can take a task, or run other code than the rows name."""
 
 
-def _worker(conn, code: CodeVersion, root: Path) -> None:
+def _worker(conn, code: CodeVersion, root: Path, context: dict | None = None) -> None:
     from quantic.bench.execute import Executor
 
-    executor = Executor(code)
+    executor = Executor(code, context)
     # What this process imported is what is on disk now, which is not
     # necessarily what was there when the run started.
     conn.send((_READY, code_version(root)))
@@ -49,9 +49,9 @@ def _worker(conn, code: CodeVersion, root: Path) -> None:
 
 
 class _Slot:
-    def __init__(self, ctx, code: CodeVersion, root: Path) -> None:
+    def __init__(self, ctx, code: CodeVersion, root: Path, context: dict | None = None) -> None:
         self.conn, child = ctx.Pipe()
-        self.process = ctx.Process(target=_worker, args=(child, code, root), daemon=True)
+        self.process = ctx.Process(target=_worker, args=(child, code, root, context), daemon=True)
         self.process.start()
         child.close()
         self.ready = False
@@ -128,6 +128,7 @@ def run_tasks(
     n_workers: int,
     deadline_s: Callable[[Task], float],
     on_done: OnDone,
+    context: dict | None = None,
 ) -> None:
     """Run every job; call ``on_done`` in the main process as each one ends.
 
@@ -137,7 +138,7 @@ def run_tasks(
     """
     ctx = mp.get_context("spawn")
     pending = deque(jobs)
-    slots = [_Slot(ctx, code, root) for _ in range(n_workers)]
+    slots = [_Slot(ctx, code, root, context) for _ in range(n_workers)]
     starts = _StartFailures()
 
     def take(slot: _Slot, message) -> None:
@@ -172,7 +173,7 @@ def run_tasks(
                         # it goes back to the front, and no row is written.
                         pending.appendleft((key, task))
                         slot.stop()
-                        slots[i] = _Slot(ctx, code, root)
+                        slots[i] = _Slot(ctx, code, root, context)
                         continue
                     slot.job = (key, task, time.monotonic() + deadline_s(task))
 
@@ -194,7 +195,7 @@ def run_tasks(
                     starts.failed(slot.process.exitcode)
                 job, exitcode = slot.job, slot.process.exitcode
                 slot.stop()
-                slots[i] = _Slot(ctx, code, root)
+                slots[i] = _Slot(ctx, code, root, context)
                 if job is not None:
                     on_done(job[0], job[1], Died(exitcode) if died else Late())
     finally:
