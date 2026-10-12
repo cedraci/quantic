@@ -75,6 +75,7 @@ class Ledger:
         Raises QuotaBusy if another process holds the lock.
         """
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             try:

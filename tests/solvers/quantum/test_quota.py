@@ -105,6 +105,13 @@ def test_the_lock_is_held_inside_with_and_released_after(tmp_path):
     assert not lock_path.exists()
 
 
+def test_the_lock_creates_a_missing_ledger_directory(tmp_path):
+    led = Ledger(tmp_path / "new" / "q.json")
+
+    with led.lock():
+        assert (tmp_path / "new" / "q.json.lock").exists()
+
+
 def test_a_second_lock_while_the_first_is_held_raises_quota_busy(tmp_path):
     led1 = ledger(tmp_path)
     led2 = ledger(tmp_path)
