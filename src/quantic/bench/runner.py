@@ -128,14 +128,22 @@ def run(
     progress_s: float = PROGRESS_S,
     no_hardware: bool = False,
     repeat_hardware: bool = False,
+    hardware_only: bool = False,
     client=None,
     ledger=None,
 ) -> Summary:
     """Run every task the store does not hold yet, printing progress as it goes.
 
+    ``hardware_only`` runs the IBM lane alone: no classical, training or
+    sampling task, so a commit made after a ``no_hardware`` run does not redo
+    the simulations first. The lane matches gates by identity and angles by
+    cache key, neither of which names the commit.
+
     ``stop_after`` and ``kill_margin_s`` exist for the tests: the first
     interrupts a run partway, the second makes a kill take seconds, not 30.
     """
+    if hardware_only and no_hardware:
+        raise ValueError("hardware_only and no_hardware together would run nothing")
     code = code_version(root)
     if code.dirty and not allow_dirty:
         raise DirtyTree(
@@ -145,6 +153,8 @@ def run(
     capped, todo = _todo(experiment, code, store)
     if stop_after is not None:
         todo = todo[:stop_after]
+    if hardware_only:
+        todo = [(k, t) for k, t in todo if is_hardware(t)]
     classical = [(k, t) for k, t in todo if not is_quantum(t)]
     training = [(k, t) for k, t in todo if t.solver == REF_QAOA_ANGLES]
     sampling = [(k, t) for k, t in todo

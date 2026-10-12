@@ -118,7 +118,7 @@ class _Lane:
         # counts against the window. confirm() swaps in the real job id after.
         reservation = f"reserved:{key}"
         self.ledger.add_pending(reservation, params["device"], key, allowance,
-                                now=self.now())
+                                now=self.now(), task_identity=task.identity())
         job_id = self.client.submit(routed, q.shots, allowance)
         self.ledger.confirm(reservation, job_id)
         row = self.pending_row(key, task, job_id, instance, angle, params, (depth, two))
@@ -166,12 +166,18 @@ def run_hardware(tasks, *, store, settings, code, where, versions, angles_dir,
             lane.summary.n_collected += 1
             handled.add(row["identity"])
         by_key = {key: task for key, task in tasks}
+        by_identity = {task.identity(): task for _, task in tasks}
         for entry in lane.ledger.pending():
-            base = entry.task_key.split("#r")[0]
-            if (entry.job_id.startswith("reserved:") or base not in by_key
-                    or lane.store.has_job(entry.job_id)):
+            if entry.job_id.startswith("reserved:") or lane.store.has_job(entry.job_id):
                 continue
-            task = by_key[base]
+            # By identity when the entry has one: a job confirmed under an older
+            # commit is still this task's job, to be adopted, not paid for again.
+            if entry.task_identity is not None:
+                task = by_identity.get(entry.task_identity)
+            else:
+                task = by_key.get(entry.task_key.split("#r")[0])
+            if task is None:
+                continue
             lane.reconcile(entry, entry.task_key, task)
             lane.summary.n_collected += 1
             handled.add(task.identity())

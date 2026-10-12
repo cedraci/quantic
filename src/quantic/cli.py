@@ -403,13 +403,21 @@ def bench_run(
                            help="Submit every planned hardware task again, even if "
                                 "stored; earlier rows are kept.")
     ] = False,
+    hardware_only: Annotated[
+        bool, typer.Option("--hardware-only",
+                           help="Run only the IBM hardware lane: no classical, training "
+                                "or sampling task, even after a new commit.")
+    ] = False,
 ) -> None:
     """Run every task the store does not hold yet. Safe to interrupt and rerun."""
+    if hardware_only and no_hardware:
+        raise typer.BadParameter("--hardware-only and --no-hardware together run nothing",
+                                 param_hint="--hardware-only")
     try:
         s = bench_runner.run(
             _experiment(config), root=_REPO_ROOT, store=store, workers=workers,
             allow_dirty=allow_dirty, no_hardware=no_hardware,
-            repeat_hardware=repeat_hardware,
+            repeat_hardware=repeat_hardware, hardware_only=hardware_only,
         )
     except (bench_runner.DirtyTree, StoreBusy, SchemaMismatch, WorkerStartError,
             QuotaExhausted, QuotaBusy, NoAccount) as exc:
@@ -420,6 +428,7 @@ def bench_run(
     )
     if s.hardware_stop:
         console.print(f"hardware lane stopped: {s.hardware_stop}")
+        raise typer.Exit(code=1)
 
 
 @bench_app.command("report")

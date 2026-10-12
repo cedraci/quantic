@@ -38,6 +38,9 @@ class Entry:
     max_execution_time_s: int
     state: str
     usage_s: float | None
+    # The task's identity, which names no commit: a job reserved under one commit
+    # is still that task's job under the next. None in ledgers written before it.
+    task_identity: str | None = None
 
 
 def default_path() -> Path:
@@ -136,7 +139,8 @@ class Ledger:
         return grant
 
     def add_pending(self, job_id: str, device: str, task_key: str,
-                    max_execution_time_s: int, now: float) -> None:
+                    max_execution_time_s: int, now: float,
+                    task_identity: str | None = None) -> None:
         max_time_float = float(max_execution_time_s)
         if not math.isfinite(max_time_float) or max_time_float < 0:
             raise ValueError(
@@ -148,7 +152,7 @@ class Ledger:
             raise ValueError(f"max_execution_time_s must be >= 1, got {max_time_int}")
         entry = Entry(job_id=job_id, device=device, task_key=task_key, submitted_at=now,
                       max_execution_time_s=max_time_int, state=PENDING,
-                      usage_s=None)
+                      usage_s=None, task_identity=task_identity)
         self._save([*self.entries(), entry])
 
     def mark_done(self, job_id: str, usage_s: float | None) -> None:

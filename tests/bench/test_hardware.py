@@ -206,6 +206,33 @@ def test_bench_run_collects_a_pending_job_instead_of_submitting_another(tmp_path
     assert len(client.submitted) == 1
 
 
+def test_hardware_only_runs_the_lane_alone_under_a_later_commit(study, monkeypatch):
+    from quantic.bench import runner as runner_module
+    from quantic.bench.keys import CodeVersion
+
+    exp, store, ledger = study
+    with Store(store, read_only=True) as s:
+        before = s.runs()
+    later = CodeVersion(commit="f" * 40, lock_hash="e" * 64, dirty=False)
+    monkeypatch.setattr(runner_module, "code_version", lambda root: later)
+    client = LocalClient()
+    got = _again(exp, store, ledger, client, hardware_only=True)
+    assert got.n_written == 2 and len(client.submitted) == 2
+    with Store(store, read_only=True) as s:
+        after = s.runs()
+    hw = after.filter(after["solver"] == "qaoa_ibm")
+    assert (hw["store_status"] == OK).all() and (hw["commit"] == later.commit).all()
+    others = after.filter(after["solver"] != "qaoa_ibm")
+    assert others.height == before.height                 # no simulator row added
+    assert later.commit not in others["commit"].to_list()
+
+
+def test_hardware_only_with_no_hardware_is_refused(study):
+    exp, store, ledger = study
+    with pytest.raises(ValueError, match="no_hardware"):
+        _again(exp, store, ledger, LocalClient(), hardware_only=True, no_hardware=True)
+
+
 def test_repeat_hardware_keeps_the_earlier_row_under_the_same_commit(study):
     exp, store, ledger = study
     client = LocalClient()
@@ -269,3 +296,54 @@ def test_a_ledger_job_with_no_store_row_is_collected_not_resubmitted(study):
     assert len(client.submitted) == 2
     rows = _hw_rows(store)
     assert (rows["store_status"] == OK).all() and rows["job_id"].n_unique() == 2
+
+
+def test_a_job_confirmed_under_an_older_commit_is_adopted_by_identity(study):
+    from dataclasses import replace
+
+    exp, store, ledger = study
+    client = LocalClient()
+
+    class Flaky:
+        def __init__(self, inner):
+            self.inner, self.armed = inner, True
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def replace(self, *a, **k):
+            if self.armed:
+                self.armed = False
+                raise RuntimeError("died before the store row")
+            return self.inner.replace(*a, **k)
+
+    code = code_version(ROOT)
+    tasks = [(t.key(code), t) for t in expand(exp) if is_hardware(t)]
+    from quantic.bench.angles import angles_dir_for
+
+    with Store(store) as s, pytest.raises(RuntimeError):
+        run_hardware(tasks, store=Flaky(s), settings=exp.quantum, code=code, where="here",
+                     versions="{}", angles_dir=angles_dir_for(store), client=client,
+                     ledger=ledger)
+    [entry] = ledger.pending()
+    assert entry.task_identity == tasks[0][1].identity()
+    # As if confirmed under commit A: another key, the same identity.
+    ledger._save([replace(entry, task_key="a" * 64)])
+    got = _lane(exp, store, ledger, client)
+    assert got.n_collected == 1
+    assert len(client.submitted) == 2                 # nothing new for the adopted task
+    rows = _hw_rows(store)
+    assert (rows["store_status"] == OK).all() and rows.height == 2
+    assert entry.job_id in rows["job_id"].to_list()
+
+
+def test_a_ledger_written_before_task_identity_still_loads(tmp_path):
+    import json
+
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps({"jobs": [{
+        "job_id": "j", "device": "ibm_fez", "task_key": "k", "submitted_at": 1.0,
+        "max_execution_time_s": 30, "state": "pending", "usage_s": None}]}),
+        encoding="utf-8")
+    [entry] = Ledger(path).entries()
+    assert entry.task_identity is None and entry.task_key == "k"
