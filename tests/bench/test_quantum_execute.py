@@ -29,6 +29,14 @@ def test_the_cache_round_trips_and_writes_atomically(tmp_path):
     assert angle_key("h", 1, 0.25, 15) != angle_key("h", 2, 0.25, 15)
 
 
+def test_the_angle_key_names_the_trainer_version(monkeypatch):
+    from quantic.bench import angles as angles_module
+
+    before = angle_key("h", 1, 0.25, 15)
+    monkeypatch.setattr(angles_module, "TRAINER_VERSION", 2)
+    assert angle_key("h", 1, 0.25, 15) != before
+
+
 def test_a_training_reference_trains_once_then_reads_the_cache(tmp_path):
     ex = _ex(tmp_path)
     task = Task(kind=REFERENCE, solver=REF_QAOA_ANGLES, params=PARAMS, **AT)

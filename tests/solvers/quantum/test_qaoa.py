@@ -99,3 +99,33 @@ def test_one_batch_needs_a_sample_cap():
     with pytest.raises(ValueError, match="one batch"):
         run_sampler("x", enc, Budget(wall_clock_s=1.0), 0,
                     lambda bqm, reads, seed: (None, None), one_batch=True)
+
+
+def _distribution(bits: np.ndarray) -> np.ndarray:
+    index = bits.astype(np.int64) @ (1 << np.arange(bits.shape[1]))
+    return np.bincount(index, minlength=1 << bits.shape[1]) / len(bits)
+
+
+def _tvd(a: np.ndarray, b: np.ndarray) -> float:
+    return 0.5 * float(np.abs(_distribution(a) - _distribution(b)).sum())
+
+
+def test_routing_keeps_the_bit_order_of_the_ideal_state():
+    """Routed and run without noise, the circuit's bitstrings are sample_ideal's.
+
+    Pins the whole path a hardware job takes: the transpiler's layout, the
+    measurement map and bits_from_counts' little-endian reading.
+    """
+    from qiskit_aer import AerSimulator
+
+    from tests.solvers.quantum.test_ising import random_qubo
+
+    shots = 20_000
+    qubo = random_qubo(5, 1)                      # not symmetric under reversal
+    angles = train(qubo, reps=1, alpha=0.25, maxiter=30)
+    routed = route(to_ising(qubo), angles, fake_backend("ibm_fez"))
+    counts = AerSimulator().run(routed, shots=shots, seed_simulator=7).result().get_counts()
+    routed_bits = bits_from_counts(counts, 5)
+    ideal = sample_ideal(qubo, angles, shots, seed=11)
+    assert _tvd(routed_bits, ideal) < 0.05
+    assert _tvd(routed_bits[:, ::-1], ideal) > 0.1   # the test tells the orders apart

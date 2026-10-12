@@ -19,6 +19,10 @@ from quantic.solvers.quantum.statevector import Landscape, qaoa_state
 
 DELTA = 0.75
 ANGLE_RULE = f"linear-ramp-{DELTA}"
+# Part of every angle cache key. Bump it whenever the trainer, the statevector
+# or the Ising map changes what angles a QUBO trains to, or cached angles from
+# the old code would be reused as if the new code had trained them.
+TRAINER_VERSION = 1
 _RHOBEG = 0.25
 
 

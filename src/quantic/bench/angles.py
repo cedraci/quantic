@@ -12,7 +12,7 @@ import os
 from importlib import metadata
 from pathlib import Path
 
-from quantic.solvers.quantum.train import ANGLE_RULE, Angles
+from quantic.solvers.quantum.train import ANGLE_RULE, TRAINER_VERSION, Angles
 
 
 class MissingAngles(RuntimeError):
@@ -21,7 +21,8 @@ class MissingAngles(RuntimeError):
 
 def angle_key(qubo_hash: str, reps: int, alpha: float, maxiter: int) -> str:
     body = {"qubo": qubo_hash, "reps": reps, "alpha": alpha, "maxiter": maxiter,
-            "rule": ANGLE_RULE, "numpy": metadata.version("numpy"),
+            "rule": ANGLE_RULE, "trainer": TRAINER_VERSION,
+            "numpy": metadata.version("numpy"),
             "scipy": metadata.version("scipy")}
     text = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()

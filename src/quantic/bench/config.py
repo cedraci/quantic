@@ -33,6 +33,7 @@ ignored is a study that did not run what its author thinks it ran.
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -170,8 +171,9 @@ def _quantum(body: dict) -> QuantumSettings:
                 and not isinstance(default, float):
             if type(value) is not int or value < 1:
                 raise ConfigError(f"[quantum] {name} must be a positive integer, got {value!r}")
-        elif type(value) not in (int, float) or value <= 0:
-            raise ConfigError(f"[quantum] {name} must be a positive number, got {value!r}")
+        elif type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ConfigError(
+                f"[quantum] {name} must be a finite positive number, got {value!r}")
         values[name] = float(value) if isinstance(default, float) else value
     settings = QuantumSettings(**values)
     if not 0.0 < settings.alpha <= 1.0:
@@ -181,6 +183,9 @@ def _quantum(body: dict) -> QuantumSettings:
             f"[quantum] quota_cap_s {settings.quota_cap_s:g} is above the "
             f"{QUOTA_CEILING_S:g} s ceiling (M5 decision D4)"
         )
+    if settings.min_job_s < 1:
+        raise ConfigError(
+            f"[quantum] min_job_s must be at least 1 s, got {settings.min_job_s:g}")
     if settings.min_job_s > settings.per_job_cap_s:
         raise ConfigError("[quantum] min_job_s must not exceed per_job_cap_s")
     try:

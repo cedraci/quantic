@@ -74,6 +74,21 @@ def test_noise_and_training_tables(tmp_path):
     assert not (out / "crossover_nones.csv").exists()
 
 
+def test_simulators_show_no_qpu_seconds_and_no_tts(tmp_path):
+    out = tmp_path / "out"
+    report(_store(tmp_path), out)
+    noise = _read(out, "qaoa_noise")
+    for solver in ("qaoa_ideal", "qaoa_noisy"):
+        assert noise.filter(pl.col("solver") == solver)["qpu_s"].to_list() == [None]
+    cells = _read(out, "cells")
+    tts = [c for c in cells.columns if c.startswith("tts99")]
+    assert "tts99_s" in tts and "tts99_lo_s_0.01" in tts
+    simulated = cells.filter(pl.col("solver").is_in(["qaoa_ideal", "qaoa_noisy"]))
+    assert simulated.height == 2
+    assert all(simulated[c].null_count() == simulated.height for c in tts)
+    assert cells.filter(pl.col("solver") == "qaoa_ibm")["tts99_s"].to_list() == [2.0]
+
+
 def test_the_quota_table_reads_the_ledger(tmp_path):
     ledger = Ledger(tmp_path / "q.json")
     ledger.add_pending("j1", "ibm_fez", "k", 30, now=1_800_000_000.0)

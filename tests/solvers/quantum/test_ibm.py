@@ -137,3 +137,10 @@ def test_a_job_that_errored_or_was_cancelled_is_a_failed_job(status):
 def test_any_other_exception_leaves_the_job_pending(status):
     with pytest.raises(ConnectionError):
         _runtime_client(status).counts("j")
+
+
+def test_the_job_limit_reaches_the_sampler():
+    from quantic.solvers.quantum.backends import fake_backend
+    from quantic.solvers.quantum.ibm import _sampler
+
+    assert _sampler(fake_backend("ibm_fez"), 17).options.max_execution_time == 17

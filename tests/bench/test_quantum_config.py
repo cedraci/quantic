@@ -96,6 +96,30 @@ def test_a_quantum_config_that_does_not_say_what_it_means_is_refused(tmp_path, e
         _load(tmp_path, BASE + extra)
 
 
+@pytest.mark.parametrize("line", [
+    "quota_cap_s = nan", "quota_cap_s = inf", "per_job_cap_s = inf", "alpha = nan",
+    "min_job_s = nan", "run_deadline_s = inf", "train_deadline_s = -inf",
+])
+def test_a_quantum_number_that_is_not_finite_is_refused(tmp_path, line):
+    name = line.split(" ")[0]
+    with pytest.raises(ConfigError, match=name):
+        _load(tmp_path, BASE + f"[quantum]\n{line}\n[solvers.qaoa_ideal]\n"
+                               "encodings = [\"binary\"]\n")
+
+
+@pytest.mark.parametrize("value", ["0.5", "0.999"])
+def test_a_job_minimum_under_one_second_is_refused(tmp_path, value):
+    with pytest.raises(ConfigError, match="min_job_s"):
+        _load(tmp_path, BASE + f"[quantum]\nmin_job_s = {value}\n[solvers.qaoa_ideal]\n"
+                               "encodings = [\"binary\"]\n")
+
+
+def test_a_job_minimum_of_one_second_loads(tmp_path):
+    exp = _load(tmp_path, BASE + "[quantum]\nmin_job_s = 1\n[solvers.qaoa_ideal]\n"
+                                 "encodings = [\"binary\"]\n")
+    assert exp.quantum.min_job_s == 1.0
+
+
 def test_an_m4_config_still_loads_and_has_no_quantum(tmp_path):
     exp = _load(tmp_path, BASE + "[solvers.cpsat]\nbudgets_s = [1]\n")
     assert exp.quantum is None

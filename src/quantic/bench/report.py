@@ -37,6 +37,7 @@ DIALS = ("D1", "D2", "D3", "D4")
 _OVERLAP_RTOL = 1e-6
 CENSORED = "censored"
 SIMULATED = "simulated"
+_SIMULATORS = ("qaoa_ideal", "qaoa_noisy")
 
 
 class CommitChoice(ValueError):
@@ -235,6 +236,15 @@ def _choose_commit(runs: pl.DataFrame, commit: str | None) -> pl.DataFrame:
     return runs
 
 
+def without_simulated_tts(table: pl.DataFrame) -> pl.DataFrame:
+    """A simulator's time is not quantum time (decision D6): its TTS columns are null."""
+    simulated = pl.col("solver").is_in(_SIMULATORS)
+    return table.with_columns(
+        pl.when(simulated).then(None).otherwise(pl.col(c)).alias(c)
+        for c in table.columns if c.startswith("tts99")
+    )
+
+
 def matched_reads(table: pl.DataFrame) -> pl.DataFrame:
     quantum = table.filter(pl.col("solver").is_in(QUANTUM_SOLVERS))
     if quantum.is_empty():
@@ -244,7 +254,7 @@ def matched_reads(table: pl.DataFrame) -> pl.DataFrame:
                             & pl.col("max_samples").is_in(shots))
     both = pl.concat([quantum, samplers], how="diagonal_relaxed")
     tts = [
-        SIMULATED if r["solver"] in ("qaoa_ideal", "qaoa_noisy")
+        SIMULATED if r["solver"] in _SIMULATORS
         else (f"{r['tts99_s']:.3g}s" if r["tts99_s"] is not None else "censored")
         for r in both.iter_rows(named=True)
     ]
@@ -265,7 +275,9 @@ def qaoa_noise(scored_runs: pl.DataFrame) -> pl.DataFrame:
         (pl.col("n_feasible_samples").sum() / pl.col("n_samples").sum()).alias("feasibility"),
         pl.col("routed_depth").median().alias("routed_depth"),
         pl.col("routed_2q").median().alias("routed_2q"),
-        pl.col("qpu_s").sum().alias("qpu_s"),
+        # Null, not 0 s, where no row has QPU time: simulators, and unknown usage.
+        pl.when(pl.col("qpu_s").is_not_null().any())
+        .then(pl.col("qpu_s").sum()).alias("qpu_s"),
     ).sort("tier", "dials", "instance_seed", "encoding", "solver")
 
 
@@ -303,7 +315,7 @@ def report(store: Path, out: Path, *, commit: str | None = None,
         runs = s.runs()
     runs = _choose_commit(runs, commit)
     out.mkdir(parents=True, exist_ok=True)
-    table = cells(runs)
+    table = without_simulated_tts(cells(runs))
     budgeted = table.filter(pl.col("budget_s").is_not_null())
     best = best_encoding(budgeted)
     written = _write(table, out, "cells")
