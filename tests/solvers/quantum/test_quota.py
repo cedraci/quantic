@@ -218,6 +218,15 @@ def test_a_done_entry_with_none_usage_counts_at_its_limit(tmp_path):
     assert led.used_s(NOW) == pytest.approx(42.0)
 
 
+def test_a_job_marked_done_without_a_usage_counts_at_its_limit(tmp_path):
+    led = ledger(tmp_path)
+    led.add_pending("a", "ibm_fez", "k", 42, now=NOW)
+    led.mark_done("a", None)
+    [entry] = led.entries()
+    assert (entry.state, entry.usage_s) == ("done", None)
+    assert led.used_s(NOW) == pytest.approx(42.0)
+
+
 # Grant calculation test (d)
 def test_grant_below_minimum_is_refused(tmp_path):
     led = ledger(tmp_path)

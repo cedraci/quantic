@@ -132,6 +132,31 @@ def test_a_failed_job_is_an_error_row_and_its_usage_is_kept(study):
     assert "job-0" in rows["error"][0] and rows["qpu_s"][0] == 1.5
 
 
+def test_a_usage_ibm_never_gives_is_unknown_and_counts_at_its_limit(study):
+    exp, store, ledger = study
+    client = LocalClient(usage_pending=True)
+    got = _lane(exp, store, ledger, client)
+    assert got.n_written == 2 and got.n_errors == 0
+    rows = _hw_rows(store)
+    assert (rows["store_status"] == OK).all()
+    assert rows["qpu_s"].to_list() == [None, None]
+    assert rows["total_s"].to_list() == [None, None]
+    entries = ledger.entries()
+    assert [(e.state, e.usage_s) for e in entries] == [("done", None), ("done", None)]
+    limits = sum(e.max_execution_time_s for e in entries)
+    assert limits == 60 and ledger.used_s(entries[-1].submitted_at) == limits
+
+
+def test_a_failed_job_whose_usage_ibm_never_gives_counts_at_its_limit(study):
+    exp, store, ledger = study
+    client = LocalClient(fail=("job-0",), usage_pending=True)
+    got = _lane(exp, store, ledger, client)
+    rows = _hw_rows(store).sort("job_id")
+    assert got.n_errors == 1 and rows["store_status"].to_list() == [ERROR, OK]
+    assert rows["qpu_s"].to_list() == [None, None]
+    assert [e.usage_s for e in ledger.entries()] == [None, None]
+
+
 def test_repeat_hardware_resubmits_stored_tasks(study):
     exp, store, ledger = study
     _lane(exp, store, ledger, LocalClient())

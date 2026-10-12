@@ -74,6 +74,8 @@ class _Lane:
         try:
             counts = self.client.counts(job_id)
         except JobFailed as exc:
+            # None when IBM never gives the figure: the row says unknown, not 0 s,
+            # and the ledger counts the job at its limit.
             usage = self.client.usage_s(job_id)
             row.update(store_status=ERROR, error=f"JobFailed: {exc}", qpu_s=usage,
                        total_s=usage)

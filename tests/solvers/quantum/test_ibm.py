@@ -69,6 +69,64 @@ def _runtime_client(status):
     return client
 
 
+class _MetricsJob:
+    def __init__(self, answers):
+        self.answers, self.asked = list(answers), 0
+
+    def metrics(self):
+        self.asked += 1
+        answer = self.answers[min(self.asked, len(self.answers)) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+class _MetricsService:
+    def __init__(self, job):
+        self._job = job
+
+    def job(self, job_id):
+        return self._job
+
+
+def _usage_client(answers, deadline_s=0.05):
+    from quantic.solvers.quantum.ibm import RuntimeClient
+
+    client = RuntimeClient.__new__(RuntimeClient)
+    client.service = _MetricsService(_MetricsJob(answers))
+    client.usage_poll_s, client.usage_deadline_s = 0.001, deadline_s
+    return client
+
+
+_PENDING_USAGE = {"usage": {"status": "pending", "qpu_charge_time_seconds": 0}}
+
+
+def test_a_usage_that_stays_pending_is_none_not_zero():
+    client = _usage_client([_PENDING_USAGE])
+    assert client.usage_s("j") is None
+    assert client.service.job("j").asked > 1          # it was asked again
+
+
+def test_a_usage_is_read_once_ibm_has_computed_it():
+    final = {"usage": {"status": "completed", "qpu_charge_time_seconds": 3.25}}
+    client = _usage_client([_PENDING_USAGE, ConnectionError("blip"), final], deadline_s=60)
+    assert client.usage_s("j") == 3.25
+
+
+@pytest.mark.parametrize("usage", [
+    {"status": "completed"},
+    {"status": "completed", "qpu_charge_time_seconds": None},
+    {"status": "completed", "qpu_charge_time_seconds": float("nan")},
+    {"status": "completed", "qpu_charge_time_seconds": -1},
+])
+def test_a_final_usage_that_is_missing_or_unreadable_is_none(usage):
+    assert _usage_client([{"usage": usage}]).usage_s("j") is None
+
+
+def test_a_local_client_can_leave_usage_pending():
+    assert LocalClient(usage_pending=True).usage_s("job-0") is None
+
+
 @pytest.mark.parametrize("status", ["ERROR", "CANCELLED"])
 def test_a_job_that_errored_or_was_cancelled_is_a_failed_job(status):
     with pytest.raises(JobFailed):

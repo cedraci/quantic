@@ -135,13 +135,14 @@ def _cell_rng(seed: int, keys: tuple) -> np.random.Generator:
     return np.random.default_rng([seed, int.from_bytes(digest[:8], "big")])
 
 
-def _success(group: pl.DataFrame, eps: float, t_run: float, rng) -> dict:
+def _success(group: pl.DataFrame, eps: float, t_run: float | None, rng) -> dict:
     ok = group[f"ok_{eps}"].to_numpy().astype(float)
     p = float(ok.mean()) if ok.size else 0.0
-    lo, hi = _bootstrap_tts(ok, t_run, rng)
+    # No run time (IBM never gave a job's usage): no TTS, rather than 0 s.
+    lo, hi = (None, None) if t_run is None else _bootstrap_tts(ok, t_run, rng)
     return {
         "p_success": p,
-        "tts99_s": tts99(t_run, p),
+        "tts99_s": None if t_run is None else tts99(t_run, p),
         "tts99_lo_s": lo,
         "tts99_hi_s": hi,
         "censored_above_s": None if p > 0 else (group["budget_s"][0] or 0) * group.height,
@@ -160,7 +161,8 @@ def cells(runs: pl.DataFrame, *, eps: float = 0.01, seed: int = 0) -> pl.DataFra
     for keys, group in rows.group_by(CELL, maintain_order=True):
         # A cell without a sample cap keeps its M4-era key, so M4 intervals reproduce.
         rng = _cell_rng(seed, keys[:5] if keys[5] is None else keys)
-        t_run = float(group["total_s"].drop_nulls().mean() or 0.0)
+        timed = group["total_s"].drop_nulls()
+        t_run = float(timed.mean()) if timed.len() else None
         by_eps = {e: _success(group, e, t_run, rng) for e in sorted({*EPSILONS, eps})}
         sampled = group["n_samples"].drop_nulls()
         if sampled.len():

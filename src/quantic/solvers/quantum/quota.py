@@ -151,9 +151,10 @@ class Ledger:
                       usage_s=None)
         self._save([*self.entries(), entry])
 
-    def mark_done(self, job_id: str, usage_s: float) -> None:
-        usage_float = float(usage_s)
-        if not math.isfinite(usage_float) or usage_float < 0:
+    def mark_done(self, job_id: str, usage_s: float | None) -> None:
+        """``None`` is IBM never giving the figure: the job then counts at its limit."""
+        usage_float = None if usage_s is None else float(usage_s)
+        if usage_float is not None and (not math.isfinite(usage_float) or usage_float < 0):
             raise ValueError(f"usage_s must be finite and non-negative, got {usage_float}")
         entries = self.entries()
         for i, e in enumerate(entries):

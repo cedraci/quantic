@@ -48,6 +48,21 @@ def test_an_infeasible_run_never_succeeds_and_a_cell_with_no_success_is_censored
     assert got["gap_median"] is None
 
 
+def test_a_cell_with_no_run_time_has_no_tts_rather_than_zero(tmp_path):
+    """IBM never gave the usage: total_s is unknown, so TTS is too, not 0 s."""
+    rows = [ref("none", 10.0, 10.0)] + [
+        run_row("none", "sa", s, 10.0) for s in range(3)
+    ]
+    for r in rows[1:]:
+        r["total_s"] = None
+    with Store(write(tmp_path / "s.duckdb", rows), read_only=True) as s:
+        got = cells(s.runs()).row(0, named=True)
+    assert got["p_success"] == 1.0 and got["t_run_s"] is None
+    assert got["tts99_s"] is None
+    assert got["tts99_lo_s"] is None and got["tts99_hi_s"] is None
+    assert got["tts99_s_0.05"] is None
+
+
 def test_an_open_reference_gives_no_gap_but_success_is_read_against_upper(tmp_path):
     rows = [ref("none", 9.0, 10.0), run_row("none", "sa", 0, 10.0)]
     with Store(write(tmp_path / "s.duckdb", rows), read_only=True) as s:
