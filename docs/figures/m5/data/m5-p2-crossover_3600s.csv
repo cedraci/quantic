@@ -1,0 +1,9 @@
+tier,dials,greedy,simulated_annealing,tabu
+T0,D1,0.00% / 52% / 0.353s (domain_wall),0.93% / 100% / 6.65s (binary),0.00% / 100% / 41.6s (binary)
+T0,D1+D2,0.00% / 35% / 0.296s (binary),0.00% / 69% / 0.568s (domain_wall),0.00% / 96% / 56.8s (domain_wall)
+T0,D1+D2+D4,0.00% / 42% / 0.159s (domain_wall),0.00% / 69% / 0.818s (domain_wall),0.00% / 95% / 59.5s (domain_wall)
+T0,D1+D4,0.00% / 79% / 0.217s (domain_wall),0.00% / 100% / 1.44s (binary),0.00% / 100% / 41.6s (domain_wall)
+T0,D2,0.00% / 20% / 0.442s (domain_wall),0.00% / 76% / 0.756s (domain_wall),0.00% / 98% / 74.3s (domain_wall)
+T0,D2+D4,0.00% / 45% / 0.416s (binary),0.00% / 92% / 1.4s (domain_wall),0.00% / 100% / 63s (domain_wall)
+T0,D4,0.00% / 65% / 0.235s (domain_wall),0.15% / 100% / 2.32s (domain_wall),0.00% / 100% / 41.8s (binary)
+T0,none,0.00% / 60% / 0.254s (domain_wall),0.00% / 100% / 3.04s (domain_wall),0.00% / 100% / 42.3s (binary)
