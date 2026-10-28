@@ -5,7 +5,8 @@ submission order, from ``m5-hardware-jobs.csv`` (the ledger ``~/.quantic/ibm-quo
 joined with the stores' hardware rows by ``experiments/m5-hardware-jobs.py``, which names
 each job's lane and pass). ``usage_s`` is IBM's QPU charge for a job, the quantum seconds
 it counts against the account; the step rises by that charge at each job. Every job cost
-2 or 3 s against a 60 s per-job limit (``max_execution_time``; 20 s for the smoke job).
+2 or 3 s against a per-job limit (``max_execution_time``) of 60 s, 20 s for the smoke job
+and 57 down to 40 s for the last nine jobs of pass 3, as the cap's remainder shrank.
 The brackets under the axis mark the five runs of the hardware lane: the smoke job of
 2026-10-14 (job 1), the three reps = 2 passes over the 30 runnable instances (two on
 2026-10-27, one on 2026-10-28) and the reps = 1 lane over its 31 instances on 2026-10-28,
@@ -134,7 +135,7 @@ def make(data: dict[str, pl.DataFrame], out: Path) -> list[Path]:
     ax.set_ylabel("QPU seconds, cumulative")
     _mark_ranges(ax, ranges)
 
-    style.heading(ax, TITLE, f"Cumulative usage_s of the {n_jobs} QAOA jobs on ibm_fez, "
+    style.heading(ax, TITLE, f"Cumulative QPU seconds of the {n_jobs} QAOA jobs on ibm_fez, "
                              "in submission order")
     handles = [Line2D([], [], color=style.BLUE, linewidth=2),
                Line2D([], [], color=style.ORANGE, linewidth=2)]

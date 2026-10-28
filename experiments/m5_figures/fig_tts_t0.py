@@ -22,13 +22,10 @@ training, transpilation or queue time, so the gap understates the real one.
 Where the device succeeds at all it needs 22.7 s (D1+D2+D4 and D2+D4), 28.4 s
 (D1+D2), 63.1 s (D2) and 133.5 s (D1+D4 and D4); none and D1 are censored. Greedy
 finds the optimum in 0.16-0.44 s on every cell, simulated annealing in
-0.57-6.6 s, tabu in 42-74 s (1,000 reads are slow for tabu). The M4 cells
-disagree with the statement that HiGHS proves every T0 cell in under 0.5 s:
-their best-over-budgets TTS99 is 0.09-0.79 s and three cells exceed 0.5 s
-(none 0.52 s, D1+D2 0.63 s, D2 0.79 s); the 0.24-0.40 s quoted by the M5
-result is the M5 store's own HiGHS rerun at the 1 s budget, not these cells.
-CP-SAT sound is faster than HiGHS on all eight cells, 0.04-0.16 s, which
-confirms "faster still on most T0 cells".
+0.57-6.6 s, tabu in 42-74 s: 1,000 reads are slow for tabu, whose marker sits right
+of the device's on D2, D1+D2, D2+D4 and D1+D2+D4. HiGHS's best-over-budgets
+TTS99 is 0.09-0.79 s (above 0.5 s on none, D1+D2 and D2), and the sound CP-SAT
+is faster than HiGHS on all eight cells, at 0.04-0.16 s.
 """
 
 from pathlib import Path

@@ -18,7 +18,10 @@ column marks the deepest circuit on which any device job found the optimum. How 
 it: noiselessly, success falls with depth because depth tracks the qubit count; on the
 device, every success sits at or left of the hairline (1,233 CZ at reps = 2, 378 at
 reps = 1), and the reps = 1 circuits sit about half as deep, 313 to 952 CZ against 735 to
-2,044. The noise model lies between the noiseless circuit and the device in both columns.
+2,044. On average the noise model lies between the noiseless circuit and the device in both
+columns (instance by instance it does not always). In the success panels every point is
+offset vertically by its backend (noiseless up, device down, by 0.03) so that ties stay
+visible.
 """
 
 from __future__ import annotations
@@ -42,6 +45,9 @@ BACKENDS = [("qaoa_ideal", style.NOISELESS), ("qaoa_noisy", style.NOISE_MODEL),
 FLOOR = 1e-4  # where a zero feasibility is drawn, hollow
 X_LIM = (200, 2150)
 SIZE = 5.5
+# Vertical offsets in the success panels, so that equal values stay visible (ties are common:
+# the device's success is a multiple of 1/3 or 0/1, and many instances sit at 0 or 1).
+DODGE = {"qaoa_ideal": 0.03, "qaoa_noisy": 0.0, "qaoa_ibm": -0.03}
 
 
 def _ladder(noise: pl.DataFrame) -> pl.DataFrame:
@@ -58,7 +64,8 @@ def _column(ax_s, ax_f, frame: pl.DataFrame, label: str) -> None:
     for solver, color in BACKENDS:
         rows = frame.filter(pl.col("solver") == solver)
         name = style.NAMES[solver]
-        ax_s.plot(rows["cz"].to_list(), rows["p_success_0.01"].to_list(), label=name,
+        ax_s.plot(rows["cz"].to_list(), [v + DODGE[solver] for v in rows["p_success_0.01"]],
+                  label=name,
                   **style.marker_kw(color, "o", SIZE))
         some = rows.filter(pl.col("feasibility") > 0)
         none = rows.filter(pl.col("feasibility") == 0)
@@ -74,7 +81,7 @@ def _column(ax_s, ax_f, frame: pl.DataFrame, label: str) -> None:
         # Left of the line where the column has room (reps = 2), else right of it (reps = 1):
         # the two spots that stay clear of the points.
         left = last - X_LIM[0] > 700
-        ax_s.annotate(f"deepest device success:\n{last:,.0f} CZ", (last, 0.86 if left else 0.62),
+        ax_s.annotate(f"deepest device success:\n{last:,.0f} CZ", (last, 0.86 if left else 0.72),
                       xytext=(-5 if left else 5, 0), textcoords="offset points",
                       ha="right" if left else "left", va="center", fontsize=7.5,
                       color=style.MUTED, linespacing=1.2)
@@ -95,7 +102,7 @@ def make(data: dict[str, pl.DataFrame], out: Path) -> list[Path]:
         _column(axes[0][j], axes[1][j], frame, label)
 
     for ax in axes[0]:
-        ax.set_ylim(-0.05, 1.05)
+        ax.set_ylim(-0.08, 1.08)
         ax.yaxis.set_major_locator(FixedLocator([0.0, 0.25, 0.5, 0.75, 1.0]))
         ax.yaxis.set_major_formatter(FixedFormatter(["0", "25%", "50%", "75%", "100%"]))
         style.finish(ax, grid="y")

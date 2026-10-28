@@ -11,9 +11,10 @@ parsing ``hw_feasible`` such as "26+20+29" as the per-job counts; an instance wi
 feasible sample in any job (3 of the 30) is drawn hollow at the floor of 0.001%. Aqua: the
 same circuit simulated without noise, ``ratio_ideal`` times ``uniform_frac``. The diagonal
 ``y = x`` is what uniform random bitstrings give; the two fainter diagonals are 10 and 100
-times that. Read it as: the device points hug the uniform line -- pooled over the 90 jobs,
-462 feasible samples in 90,000 shots against 233.3 expected from uniform bitstrings, a
-ratio of 1.98 -- while the noiseless circuit sits about 50 times above it (median ratio
+times that. Read it as: the device points sit just above the uniform line -- a median
+2.1 times it per instance, three instances at 10 to 33 times, and 1.98 pooled (462
+feasible samples in 90,000 shots against 233.3 expected from uniform bitstrings) --
+while the noiseless circuit sits about 50 times above it (median ratio
 50.3 over the 30 instances, from 1.8 on D1+D2-2030 to 4,515 on D4-2026, where a single
 feasible device sample in 3,000 shots is already 33 times the uniform rate).
 """

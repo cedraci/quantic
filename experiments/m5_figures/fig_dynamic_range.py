@@ -11,7 +11,7 @@ The two tables are joined on (dials, instance_seed) for ``encoding ==
 binary``. The color is the qubit count (``n_vars``) in four ordinal bins,
 light to dark: 16, 18-20, 21-22, 23-24 qubits. How to read it: the dark
 23-24 qubit points sit at or near zero whatever their dynamic range, the
-light 16 qubit points at or near one; the note gives the Spearman rank
+light 16 qubit points at one but for D1+D2-2026 (0.7); the note gives the Spearman rank
 correlation of the success with each quantity, computed from these 31 points
 (``scipy.stats.spearmanr``): the qubit count tracks the noiseless success
 (-0.77, p = 4e-7), the dynamic range does not (-0.16, p = 0.38). The two
@@ -36,8 +36,8 @@ SOURCE = ("Source: m5-p2-qaoa_training.csv and m5-p2-qaoa_noise.csv (qaoa_ideal 
           "docs/figures/m5/data. "
           "Regenerate: uv run --no-sync --with matplotlib experiments/m5-figures.py")
 # Ordinal qubit-count bins: (legend label, lowest n_vars, highest n_vars, BLUE_RAMP step).
-BINS = [("16 qubits", 16, 16, 250), ("18-20", 18, 20, 400),
-        ("21-22", 21, 22, 550), ("23-24", 23, 24, 700)]
+BINS = [("16 qubits", 16, 16, 250), ("18–20", 18, 20, 400),
+        ("21–22", 21, 22, 550), ("23–24", 23, 24, 700)]
 # Direct labels, keyed by (dials, instance_seed): x offset in points and the text anchor.
 LABELLED = {("D1+D4", 2030): (-8, "right"), ("D1", 2029): (8, "left")}
 

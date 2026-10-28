@@ -1,21 +1,23 @@
 """Training the angles: seconds per QUBO against qubit count.
 
-Caption. Wall-clock seconds to train the QAOA angles of one QUBO (``train_s``)
-against its qubit count (``n_vars``), from ``m5-p2-qaoa_training.csv``. Every
-training is a blue point: the 47 reps = 2 QUBOs of the M5 study, 31 binary and
-16 domain-wall, drawn with the same marker and spread sideways where several
-share a qubit count and a similar time; the line joins the median at each qubit
-count. The y axis is logarithmic, labelled in seconds, minutes, hours and days.
-Training is COBYLA with 200 evaluations of an exact-statevector CVaR at
-alpha = 0.25; 45 of the 47 trainings used all 200 evaluations. Read it as an
-exponential: the median grows about 2.3x per added qubit, from 6 s at 16 qubits
-to 66 min at 24. The hollow marker at 28 qubits is the study's dry run, not a
-training: 413 s per evaluation x 200 evaluations = 23 h and 20 GB of
-statevector, so it was not run. The gray hairline at 0.4 s is the classical
-reference: HiGHS proves the optimum of every one of these instances in under
-0.4 s. The reps = 1 rung's 47 trainings (``m5-p1-qaoa_training.csv``) are drawn
-the same way in orange: 3.6 h in all against 17.3 h at reps = 2, a median of 0.8 s at
-16 qubits and 16 min at 24, and COBYLA stopped before its 200 evaluations in 46 of
+Caption. Wall-clock seconds to train the QAOA angles of one QUBO (``train_s``) against
+its qubit count (``n_vars``), from ``m5-p2-qaoa_training.csv``. Every training is a blue
+point: the 47 reps = 2 QUBOs of the M5 study, 31 binary and 16 domain-wall, drawn with
+the same marker and spread sideways where several share a qubit count and a similar
+time; the line joins the median at each qubit count. The y axis is logarithmic, labelled
+in seconds, minutes, hours and days. Training is COBYLA with 200 evaluations of an
+exact-statevector CVaR at alpha = 0.25; 45 of the 47 trainings used all 200 evaluations.
+Read it as an exponential: the median grows about 2.3x per added qubit, from 6 s at 16
+qubits to 66 min at 24. The hollow marker at 28 qubits is the study's dry run, not a
+training: 413 s per evaluation x 200 evaluations = 23 h and 20 GB of statevector, so it
+was not run. The gray hairline at 1 s is the classical reference: HiGHS, at its 1 s
+budget, has every one of these instances within 1% of the optimum in at most 1.0 s (cell
+means 0.24-0.40 s; one run stopped at the budget without a proof), and every training
+takes longer than HiGHS on the same instance, at least 8 times longer at reps = 2 and 2
+times at reps = 1, each against its own store's HiGHS (1.2 against the reps = 2 store's).
+The reps = 1 rung's 47 trainings (``m5-p1-qaoa_training.csv``) are
+drawn the same way in orange: 3.6 h in all against 17.3 h at reps = 2, a median of 0.8 s
+at 16 qubits and 16 min at 24, and COBYLA stopped before its 200 evaluations in 46 of
 the 47 (31 to 146 evaluations), where at reps = 2 it ran out of evaluations in 45.
 """
 
@@ -43,8 +45,9 @@ DRY_RUN_EVALS = 200
 DRY_RUN_GB = 20
 DRY_RUN_S = DRY_RUN_S_PER_EVAL * DRY_RUN_EVALS  # 82,600 s
 
-# HiGHS proves the optimum of every M5 instance within this wall-clock bound.
-HIGHS_PROOF_S = 0.4
+# HiGHS at its 1 s budget has every M5 instance within 1% of the optimum within this bound
+# (slowest run 1.005 s; m5-p2-cells.csv and the stores).
+HIGHS_PROOF_S = 1.0
 
 X_LIM = (14.8, 28.9)
 Y_LIM = (0.2, 2.5e5)
@@ -143,7 +146,8 @@ def make(data: dict[str, pl.DataFrame], out: Path) -> list[Path]:
     # the 16-qubit swarm, which reaches down to this line at reps = 1.
     ax.axhline(HIGHS_PROOF_S, color=style.CLASSICAL, linewidth=0.8, zorder=1)
     ax.text(16.75, HIGHS_PROOF_S * 1.15,
-            f"HiGHS proves the optimum of every instance in under {HIGHS_PROOF_S} s",
+            f"HiGHS, 1 s budget: every instance within 1% of its optimum in at most "
+            f"{HIGHS_PROOF_S:.1f} s",
             ha="left", va="bottom", fontsize=8, color=style.MUTED, zorder=4)
 
     # The dry run at 28 qubits: a hollow marker, annotated to its left.

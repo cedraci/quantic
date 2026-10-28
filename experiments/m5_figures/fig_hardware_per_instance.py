@@ -15,7 +15,7 @@ feasible share of all 2^16 bitstrings) for the six 16-qubit instances, estimated
 "optimum found in k of n jobs" marks the rows where k of the n jobs returned at least
 one feasible sample within 1 % of the proven optimum (``hw_success``); the other 22
 rows found none. How to read it: feasible samples are a few per thousand everywhere,
-close to what uniform random bitstrings would give (mean 5.13 per 1,000 against a
+about twice what uniform random bitstrings would give (mean 5.13 per 1,000 against a
 uniform expectation of 2.59; the largest bar, 25.0 on D1+D2-2030, sits at its uniform
 expectation of 25.3), and the eight instances with a success lie at 735 to 1,233 CZ
 gates, seven of them in the ten shallowest rows. From 1,261 CZ gates down no job found

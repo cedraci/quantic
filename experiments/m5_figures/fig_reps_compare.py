@@ -3,7 +3,8 @@
 Caption. One row per binary-encoded T0 instance that ran on ibm_fez at either depth (31:
 the 30 of reps = 2 and ``D2+D4-2030``, whose reps = 2 gate run was killed, so it ran on the
 device at reps = 1 only), labelled dials-seed and sorted by the routed CZ count of its
-reps = 2 device circuit, shallowest at the top (``D2+D4-2030`` last). In each of the three
+reps = 2 device circuit, shallowest at the top (``D2+D4-2030`` last; ties go by the
+reps = 1 count, then by name). In each of the three
 panels the x axis is success at epsilon = 1%, the share of runs whose best feasible sample
 is within 1% of the proven optimum; the filled marker is reps = 2
 (``m5-p2-qaoa_noise.csv``), the hollow one reps = 1 (``m5-p1-qaoa_noise.csv``), joined by
@@ -14,10 +15,11 @@ reps = 1, so the markers sit at 0, 1/3, 2/3, 1 and at 0 or 1. The panel titles g
 mean success over the instances present at both depths. The right-hand column gives the
 routed CZ count of each device circuit, reps = 2 then reps = 1. How to read it: halving the
 depth halves the CZ count (735-2,044 to 313-952) and costs the noiseless circuit about a
-quarter of its success (mean 0.45 to 0.35 on the 31 instances), while on the device
+fifth of its success (mean 0.45 to 0.35 on the 31 instances), while on the device
 the reps = 1 successes sit on four instances of 313-325 CZ gates and one of 378, where
 reps = 2 had succeeded on 8 instances of 735 to 1,233 gates; the device's mean success
-over the 30 shared instances goes from 0.12 (three jobs each) to 0.17 (one job each).
+over the 30 shared instances goes from 0.12 (three jobs each) to 0.17 (one job each),
+a difference within shot noise.
 """
 
 from __future__ import annotations
@@ -63,7 +65,7 @@ def make(data: dict[str, pl.DataFrame], out: Path) -> list[Path]:
     two, one = _success(data["m5-p2-qaoa_noise"]), _success(data["m5-p1-qaoa_noise"])
     cz2, cz1 = _cz(two), _cz(one)
     instances = sorted(set(cz2) | set(cz1),
-                       key=lambda k: (k not in cz2, cz2.get(k, 0.0), cz1.get(k, 0.0)))
+                       key=lambda k: (k not in cz2, cz2.get(k, 0.0), cz1.get(k, 0.0), k))
     y_of = {k: i for i, k in enumerate(instances)}
     n = len(instances)
 
@@ -101,8 +103,8 @@ def make(data: dict[str, pl.DataFrame], out: Path) -> list[Path]:
     axes[1].set_xlabel("runs within 1% of the optimum")
     # The CZ counts of the device circuits, right of the device panel: reps 2 -> reps 1.
     for k, y in y_of.items():
-        a = f"{cz2[k]:,.0f}" if k in cz2 else "-"
-        b = f"{cz1[k]:,.0f}" if k in cz1 else "-"
+        a = f"{cz2[k]:,.0f}" if k in cz2 else "—"
+        b = f"{cz1[k]:,.0f}" if k in cz1 else "—"
         axes[2].annotate(f"{a} → {b}", (1.0, y), xycoords=("axes fraction", "data"),
                          xytext=(8, 0), textcoords="offset points", ha="left", va="center",
                          fontsize=7, color=style.MUTED)

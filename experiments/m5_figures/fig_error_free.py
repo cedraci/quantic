@@ -1,6 +1,6 @@
 """The error-free fraction of a shot against two-qubit gates, at ibm_fez's median CZ error.
 
-Caption. The curve is (1 - 0.0025)^n: the probability that a shot passes n two-qubit (CZ)
+Caption. The curve is (1 − 0.0025)^n: the probability that a shot passes n two-qubit (CZ)
 gates without a two-qubit error, at 0.25% per gate -- the median CZ error of ibm_fez's
 calibration read after the first pass (properties last updated 2026-10-27 16:32); the next
 morning's calibration (last updated 2026-10-28 09:49) has the same median. The ticks along
@@ -10,9 +10,9 @@ circuits, the ``qaoa_ibm`` binary-encoding rows of
 overlap, so fewer than 30 ticks show. The two labelled points are the shallowest and the
 deepest of them: 735 CZ gates leave 16% of shots error-free, 2,044 leave 0.6%, so the
 study's circuits span exactly the stretch where the curve falls from about one shot in six
-to one in 170. The curve ignores single-qubit and readout errors (readout error is 1.1% per
-qubit on that calibration, so a 16-24 qubit readout is itself wrong 16-23% of the time), so
-it is an upper bound on the shots that survive. The reps = 1 rung's 31 device circuits
+to one in 170. The curve ignores single-qubit and readout errors (readout error is 1.0-1.1% per
+qubit on the two calibrations, so a 16-24 qubit readout is itself wrong 15-23% of the
+time), so it is an upper bound on the shots that survive. The reps = 1 rung's 31 device circuits
 (``m5-p1-qaoa_noise``) form a second, orange rug row: 313 to 952 CZ gates, where the curve
 gives 46% down to 9% of shots error-free, against 16% down to 0.6% for the reps = 2
 circuits.
@@ -60,7 +60,7 @@ def make(data: dict[str, pl.DataFrame], out: Path) -> list[Path]:
 
     xs = list(range(0, X_MAX + 1, 5))
     ax.plot(xs, [_error_free(x) for x in xs], color=style.DEVICE, linewidth=2,
-            label=f"(1 - {P_CZ:.2%})^n")
+            label=f"(1 − {P_CZ:.2%})^n")
 
     # The rug: one short tick per device circuit, in a strip under the 0% line.
     levels = [0.045] if len(rugs) == 1 else [0.066, 0.024]
@@ -95,7 +95,7 @@ def make(data: dict[str, pl.DataFrame], out: Path) -> list[Path]:
     ax.set_yticks(range(0, 101, 25), [f"{v}%" for v in range(0, 101, 25)])
     ax.set_xlabel("Two-qubit (CZ) gates in the routed circuit")
     ax.set_ylabel("Shots without a two-qubit error")
-    style.heading(ax, TITLE, f"(1 - {P_CZ:.2%})^n for n CZ gates; {rug_note}",
+    style.heading(ax, TITLE, f"(1 − {P_CZ:.2%})^n for n CZ gates; {rug_note}",
                   legend_row=False)
     style.finish(ax, grid="y")
     tables = "m5-p2-qaoa_noise.csv" + (" and m5-p1-qaoa_noise.csv" if len(rugs) > 1 else "")
