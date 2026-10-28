@@ -15,6 +15,16 @@
     budgets_s = [0.1, 1, 10, 60]
     max_samples = 1000            # optional, applies to every budget
 
+    [quantum]                     # required by any qaoa_* solver
+    reps = 2
+    shots = 1000
+    device = "ibm_fez"            # must have a fake twin
+    quota_cap_s = 300             # never above 300
+
+    [solvers.qaoa_ideal]          # also qaoa_noisy, qaoa_ibm; no budgets_s
+    encodings = ["binary"]
+    seeds = "0..4"
+
 A solver name is one of ``SOLVERS`` or an import path ``"package.module:Class"``
 whose class takes ``seed`` (and ``encoding`` and ``zeta_bits`` when the
 section names encodings). Unknown keys are refused: a misspelt key silently
@@ -23,6 +33,7 @@ ignored is a study that did not run what its author thinks it ran.
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,13 +41,15 @@ from pathlib import Path
 from quantic.problem.dials import Dials
 from quantic.problem.liquidation import LADDER
 
+QUBO_SOLVERS = ("simulated_annealing", "tabu", "greedy")
+QUANTUM_SOLVERS = ("qaoa_ideal", "qaoa_noisy", "qaoa_ibm")
 SOLVERS = (
     "almgren_chriss", "cpsat", "exact_pwl_milp",
-    "simulated_annealing", "tabu", "greedy",
+    "simulated_annealing", "tabu", "greedy", *QUANTUM_SOLVERS,
 )
-QUBO_SOLVERS = ("simulated_annealing", "tabu", "greedy")
 
-_TOP = {"instances", "references", "solvers"}
+_TOP = {"instances", "references", "solvers", "quantum"}
+_QUANTUM_SOLVER = {"encodings", "zeta_bits", "seeds"}
 _INSTANCES = {"tiers", "dials", "seeds"}
 _REFERENCES = {"qubo_minimum_tiers"}
 _SOLVER = {"encodings", "zeta_bits", "seeds", "budgets_s", "max_samples"}
@@ -64,6 +77,25 @@ class Experiment:
     seeds: tuple[int, ...]
     qubo_minimum_tiers: tuple[str, ...]
     solvers: tuple[SolverPlan, ...]
+    quantum: QuantumSettings | None = None
+
+
+@dataclass(frozen=True)
+class QuantumSettings:
+    reps: int = 2
+    alpha: float = 0.25
+    maxiter: int = 200
+    shots: int = 1000
+    max_qubits: int = 28
+    noisy_max_qubits: int = 20
+    gate_shots: int = 32
+    device: str = "ibm_fez"
+    quota_cap_s: float = 300.0
+    per_job_cap_s: float = 60.0
+    min_job_s: float = 10.0
+    workers: int = 2
+    train_deadline_s: float = 14400.0
+    run_deadline_s: float = 7200.0
 
 
 def _unknown(where: str, got: dict, allowed: set[str]) -> None:
@@ -121,6 +153,48 @@ def _tiers(value) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _quantum(body: dict) -> QuantumSettings:
+    from dataclasses import fields
+
+    from quantic.solvers.quantum.backends import fake_backend
+    from quantic.solvers.quantum.quota import QUOTA_CEILING_S
+
+    names = {f.name: f for f in fields(QuantumSettings)}
+    _unknown("[quantum]", body, set(names))
+    values = {}
+    for name, value in body.items():
+        default = names[name].default
+        if isinstance(default, str):
+            if not isinstance(value, str):
+                raise ConfigError(f"[quantum] {name} must be a string, got {value!r}")
+        elif isinstance(default, int) and not isinstance(default, bool) \
+                and not isinstance(default, float):
+            if type(value) is not int or value < 1:
+                raise ConfigError(f"[quantum] {name} must be a positive integer, got {value!r}")
+        elif type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ConfigError(
+                f"[quantum] {name} must be a finite positive number, got {value!r}")
+        values[name] = float(value) if isinstance(default, float) else value
+    settings = QuantumSettings(**values)
+    if not 0.0 < settings.alpha <= 1.0:
+        raise ConfigError(f"[quantum] alpha must be in (0, 1], got {settings.alpha}")
+    if settings.quota_cap_s > QUOTA_CEILING_S:
+        raise ConfigError(
+            f"[quantum] quota_cap_s {settings.quota_cap_s:g} is above the "
+            f"{QUOTA_CEILING_S:g} s ceiling (M5 decision D4)"
+        )
+    if settings.min_job_s < 1:
+        raise ConfigError(
+            f"[quantum] min_job_s must be at least 1 s, got {settings.min_job_s:g}")
+    if settings.min_job_s > settings.per_job_cap_s:
+        raise ConfigError("[quantum] min_job_s must not exceed per_job_cap_s")
+    try:
+        fake_backend(settings.device)
+    except KeyError as exc:
+        raise ConfigError(f"[quantum] device: {exc.args[0]}") from exc
+    return settings
+
+
 def _is_qubo(name: str) -> bool:
     return name in QUBO_SOLVERS
 
@@ -153,6 +227,19 @@ def load(path: Path) -> Experiment:
     plans = []
     for name, body in raw.get("solvers", {}).items():
         where = f"[solvers.{name}]"
+        if name in QUANTUM_SOLVERS:
+            _unknown(where, body, _QUANTUM_SOLVER)
+            if not body.get("encodings"):
+                raise ConfigError(f"{where}: a QAOA solver needs its encodings")
+            _once(body["encodings"], where, "encodings")
+            zeta_bits = _positive_int(body, "zeta_bits", where)
+            plans.append(SolverPlan(
+                name=name, encodings=tuple(body["encodings"]),
+                zeta_bits=8 if zeta_bits is None else zeta_bits,
+                seeds=_seeds(body.get("seeds", [0]), where),
+                budgets_s=(), max_samples=None,
+            ))
+            continue
         _unknown(where, body, _SOLVER)
         if name not in SOLVERS and ":" not in name:
             raise ConfigError(f"{where}: unknown solver; known: {SOLVERS}")
@@ -178,6 +265,11 @@ def load(path: Path) -> Experiment:
             budgets_s=budgets,
             max_samples=_positive_int(body, "max_samples", where),
         ))
+    quantum = None
+    if "quantum" in raw:
+        quantum = _quantum(raw["quantum"])
+    if any(p.name in QUANTUM_SOLVERS for p in plans) and quantum is None:
+        raise ConfigError("a QAOA solver needs a [quantum] section")
     if not plans:
         raise ConfigError("the experiment names no solver")
 
@@ -188,4 +280,5 @@ def load(path: Path) -> Experiment:
         seeds=_seeds(inst.get("seeds", [2026]), "[instances]"),
         qubo_minimum_tiers=tuple(qubo_tiers),
         solvers=tuple(plans),
+        quantum=quantum,
     )

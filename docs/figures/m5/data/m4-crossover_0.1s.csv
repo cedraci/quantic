@@ -1,0 +1,33 @@
+tier,dials,cpsat,exact_pwl_milp,greedy,tabu,simulated_annealing
+T0,D1,0.17% / 100% / 0.787s,0.77% / 100% / 1.41s,0.00% / 51% / 0.106s (domain_wall),0.00% / 100% / 0.181s (domain_wall),2.96% / 100% / 3.85s (binary)
+T0,D1+D2,0.00% / 100% / 0.147s,37.59% / 100% / 6.49s,0.00% / 29% / 0.121s (one_hot),2.59% / 97% / 1.2s (domain_wall),0.00% / 66% / 0.223s (domain_wall)
+T0,D1+D2+D3,0.00% / 100% / 0.0265s,0.00% / 100% / 0.0406s,42.48% / 3% / 45.7s (binary),55.12% / 11% / 113s (binary),48.99% / 30% / 27.2s (one_hot)
+T0,D1+D2+D3+D4,0.00% / 76% / 0.432s,0.00% / 100% / 0.12s,13.61% / 2% / 82.1s (binary),27.58% / 10% / 23.7s (one_hot),20.24% / 22% / 11.8s (one_hot)
+T0,D1+D2+D4,0.00% / 100% / 0.0579s,0.00% / 100% / 0.093s,0.00% / 48% / 0.114s (binary),19.07% / 95% / 2.72s (binary),0.00% / 63% / 0.246s (domain_wall)
+T0,D1+D3,0.00% / 100% / 0.0406s,0.00% / 100% / 0.0371s,9.31% / 4% / 57s (binary),7.01% / 15% / 33.5s (binary),12.15% / 50% / 23.3s (binary)
+T0,D1+D3+D4,0.00% / 40% / 1.29s,0.00% / 100% / 0.192s,17.03% / 3% / 219s (binary),"17.46% / 3% / censored, > 25 s (one_hot)",11.26% / 20% / 35.9s (domain_wall)
+T0,D1+D4,0.00% / 100% / 0.0511s,0.00% / 100% / 0.191s,0.00% / 89% / 0.104s (domain_wall),0.00% / 100% / 0.134s (domain_wall),0.38% / 100% / 0.442s (binary)
+T0,D2,3.55% / 100% / 1.13s,21.38% / 100% / 5.75s,0.00% / 23% / 0.193s (domain_wall),12.33% / 97% / 1.67s (binary),0.00% / 72% / 0.36s (domain_wall)
+T0,D2+D3,0.00% / 100% / 0.0556s,0.00% / 100% / 0.0651s,17.58% / 4% / 37.6s (one_hot),19.93% / 12% / 236s (binary),24.97% / 16% / 10.6s (one_hot)
+T0,D2+D3+D4,0.00% / 76% / 0.425s,0.00% / 100% / 0.529s,28.07% / 2% / 49.8s (one_hot),33.20% / 17% / 119s (domain_wall),20.67% / 20% / 28.4s (domain_wall)
+T0,D2+D4,0.00% / 100% / 0.13s,0.00% / 100% / 0.298s,0.00% / 39% / 0.195s (binary),29.00% / 100% / 8.31s (domain_wall),0.00% / 87% / 0.761s (domain_wall)
+T0,D3,0.00% / 100% / 0.0884s,0.00% / 100% / 0.0597s,25.35% / 4% / 462s (binary),"7.57% / 7% / censored, > 25 s (domain_wall)",46.02% / 5% / 189s (one_hot)
+T0,D3+D4,0.00% / 60% / 0.769s,0.00% / 100% / 0.112s,0.00% / 62% / 11.4s (domain_wall),0.00% / 17% / 3.66s (one_hot),14.95% / 71% / 3.72s (binary)
+T0,D4,0.00% / 100% / 0.0724s,0.00% / 100% / 0.106s,0.00% / 91% / 0.0887s (binary),0.00% / 100% / 0.164s (domain_wall),1.78% / 100% / 0.932s (binary)
+T0,none,1.36% / 100% / 0.808s,0.47% / 100% / 1.16s,0.00% / 65% / 0.107s (domain_wall),0.00% / 100% / 0.147s (domain_wall),1.36% / 100% / 0.88s (binary)
+T1,D1,"- / 0% / censored, > 2.5 s","18.53% / 40% / censored, > 0.5 s",4.77% / 100% / 46.9s (binary),0.03% / 100% / 0.185s (domain_wall),"15.55% / 14% / censored, > 25 s (domain_wall)"
+T1,D1+D2,"1.39% / 84% / censored, > 2.5 s","22.12% / 80% / censored, > 0.5 s",10.82% / 3% / 62.6s (domain_wall),"54.47% / 3% / censored, > 25 s (binary)","22.02% / 12% / censored, > 25 s (domain_wall)"
+T1,D1+D2+D3,1.70% / 68% / 1.48s,0.00% / 100% / 0.427s,"26.45% / 0% / censored, > 25 s (binary)","29.81% / 2% / censored, > 25 s (domain_wall)","31.48% / 4% / censored, > 25 s (binary)"
+T1,D1+D2+D3+D4,"- / 0% / censored, > 2.5 s",0.00% / 60% / 5.54s,"24.86% / 1% / censored, > 25 s (one_hot)","83.38% / 1% / censored, > 25 s (domain_wall)","21.48% / 0% / censored, > 25 s (one_hot)"
+T1,D1+D2+D4,1.75% / 100% / 2.07s,4.91% / 100% / 2.16s,5.23% / 2% / 5.21s (domain_wall),"70.88% / 2% / censored, > 25 s (binary)",47.78% / 1% / 148s (one_hot)
+T1,D1+D3,"- / 0% / censored, > 2.5 s",0.24% / 60% / 1.24s,"18.25% / 71% / censored, > 25 s (binary)","41.49% / 96% / censored, > 25 s (binary)","22.01% / 99% / censored, > 25 s (binary)"
+T1,D1+D3+D4,"- / 0% / censored, > 2.5 s",0.04% / 40% / 2.06s,"17.74% / 90% / censored, > 25 s (binary)","34.76% / 87% / censored, > 25 s (binary)","18.74% / 24% / censored, > 25 s (domain_wall)"
+T1,D1+D4,"23.37% / 8% / censored, > 2.5 s",32.25% / 60% / 4.33s,4.44% / 99% / 6.53s (binary),0.74% / 100% / 0.992s (domain_wall),"13.64% / 100% / censored, > 25 s (binary)"
+T1,D2,"6.07% / 56% / censored, > 2.5 s","38.23% / 80% / censored, > 0.5 s","19.02% / 3% / censored, > 25 s (one_hot)","72.11% / 1% / censored, > 25 s (binary)","47.62% / 1% / censored, > 25 s (one_hot)"
+T1,D2+D3,16.60% / 56% / 2.04s,0.10% / 100% / 0.433s,"31.32% / 1% / censored, > 25 s (one_hot)","123.04% / 0% / censored, > 25 s (domain_wall)","31.84% / 2% / censored, > 25 s (binary)"
+T1,D2+D3+D4,"- / 0% / censored, > 2.5 s","12.61% / 40% / censored, > 0.5 s","47.34% / 0% / censored, > 25 s (binary)","55.86% / 1% / censored, > 25 s (domain_wall)","41.37% / 3% / censored, > 25 s (binary)"
+T1,D2+D4,0.58% / 100% / 0.409s,11.12% / 100% / 2.2s,"23.17% / 0% / censored, > 25 s (domain_wall)","- / 0% / censored, > 25 s (binary)","15.47% / 0% / censored, > 25 s (domain_wall)"
+T1,D3,"- / 0% / censored, > 2.5 s",12.62% / 40% / 13.9s,"19.10% / 97% / censored, > 25 s (binary)","15.37% / 2% / censored, > 25 s (domain_wall)","18.62% / 100% / censored, > 25 s (binary)"
+T1,D3+D4,"- / 0% / censored, > 2.5 s",0.00% / 60% / 3.17s,"14.71% / 90% / censored, > 25 s (binary)","34.99% / 84% / censored, > 25 s (binary)","16.43% / 96% / censored, > 25 s (binary)"
+T1,D4,"- / 0% / censored, > 2.5 s",9.70% / 40% / 15.2s,2.51% / 0% / 237s (domain_wall),0.27% / 96% / 0.474s (domain_wall),"11.50% / 99% / censored, > 25 s (binary)"
+T1,none,"- / 0% / censored, > 2.5 s","34.40% / 60% / censored, > 0.5 s","6.55% / 100% / censored, > 25 s (binary)",0.00% / 100% / 0.273s (domain_wall),"18.82% / 100% / censored, > 25 s (binary)"

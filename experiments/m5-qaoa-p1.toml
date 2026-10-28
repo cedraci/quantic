@@ -1,0 +1,41 @@
+# The M5 study's second rung: the same CVaR-QAOA at reps = 1, half the circuit
+# depth of experiments/m5-qaoa.toml, on the same T0 cells (owner decision,
+# 2026-10-27): does a shallower circuit survive the device better?
+# The samplers are not run again here: at matched reads they do not depend on
+# reps, and the main study's store already holds them on these instances.
+#   quantic bench run experiments/m5-qaoa-p1.toml --store <path> --no-hardware
+#   quantic bench run experiments/m5-qaoa-p1.toml --store <path>      (hardware, with go-ahead)
+
+[instances]
+tiers = ["T0"]
+dials = ["none", "D1", "D2", "D4", "D1+D2", "D1+D4", "D2+D4", "D1+D2+D4"]
+seeds = "2026..2030"
+
+[references]
+qubo_minimum_tiers = ["T0"]
+
+[quantum]
+reps = 1
+alpha = 0.25
+maxiter = 200
+shots = 1000
+max_qubits = 24
+noisy_max_qubits = 20
+gate_shots = 32
+device = "ibm_fez"
+quota_cap_s = 300
+
+[solvers.qaoa_ideal]
+encodings = ["binary", "domain_wall"]
+seeds = "0..19"
+
+[solvers.qaoa_noisy]
+encodings = ["binary"]
+seeds = "0..4"
+
+[solvers.qaoa_ibm]
+encodings = ["binary"]
+seeds = "0..0"
+
+[solvers.exact_pwl_milp]
+budgets_s = [1]

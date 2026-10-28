@@ -23,3 +23,13 @@ def test_layer_contract_holds():
 
     result = subprocess.run([str(exe)], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_quantum_stack_is_installed():
+    import qiskit
+    import qiskit_aer
+    import qiskit_ibm_runtime
+
+    assert int(qiskit.__version__.split(".")[0]) >= 2
+    assert qiskit_aer.__version__
+    assert qiskit_ibm_runtime.__version__

@@ -15,12 +15,23 @@ import polars as pl
 
 from quantic.bench.keys import CodeVersion, Task
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # store_status: what happened to the task, as opposed to the solver's status.
 OK = "ok"
 ERROR = "error"
 KILLED = "killed"
+PENDING = "pending"
+
+# Columns schema 2 added, in table order after schema 1's: (name, SQL type, polars type).
+_V2_COLUMNS = (
+    ("params", "VARCHAR", pl.String), ("identity", "VARCHAR", pl.String),
+    ("backend", "VARCHAR", pl.String), ("device", "VARCHAR", pl.String),
+    ("job_id", "VARCHAR", pl.String), ("qpu_s", "DOUBLE", pl.Float64),
+    ("queue_s", "DOUBLE", pl.Float64), ("routed_depth", "INTEGER", pl.Int32),
+    ("routed_2q", "INTEGER", pl.Int32), ("angle_key", "VARCHAR", pl.String),
+    ("reps", "INTEGER", pl.Int32), ("shots", "BIGINT", pl.Int64),
+)
 
 _TABLES = """
 CREATE TABLE IF NOT EXISTS meta (key VARCHAR PRIMARY KEY, value VARCHAR);
@@ -42,7 +53,10 @@ CREATE TABLE IF NOT EXISTS runs (
     energy_mismatch DOUBLE,
     qubo_energy DOUBLE, qubo_total DOUBLE,
     dynamic_range DOUBLE, n_vars INTEGER,
-    total_s DOUBLE, timings VARCHAR, detail VARCHAR
+    total_s DOUBLE, timings VARCHAR, detail VARCHAR,
+    params VARCHAR, identity VARCHAR, backend VARCHAR, device VARCHAR, job_id VARCHAR,
+    qpu_s DOUBLE, queue_s DOUBLE, routed_depth INTEGER, routed_2q INTEGER,
+    angle_key VARCHAR, reps INTEGER, shots BIGINT
 );
 CREATE TABLE IF NOT EXISTS samples (
     key VARCHAR, digest VARCHAR, count BIGINT, energy DOUBLE,
@@ -61,6 +75,7 @@ RUN_COLUMNS = (
     "n_samples", "n_feasible_samples", "best_energy", "energy_mismatch",
     "qubo_energy", "qubo_total", "dynamic_range", "n_vars",
     "total_s", "timings", "detail",
+    *(c for c, _, _ in _V2_COLUMNS),
 )
 
 
@@ -96,6 +111,7 @@ def blank_row(
         zeta_bits=task.zeta_bits, solver_seed=task.solver_seed, budget_s=task.budget_s,
         max_samples=task.max_samples, commit=code.commit, lock_hash=code.lock_hash,
         dirty=code.dirty, machine=where, packages=versions,
+        params=task.params, identity=task.identity(),
     )
     return row
 
@@ -133,15 +149,27 @@ class Store:
         found = self.con.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
         ).fetchone()
+        version = None if found is None else int(found[0])
         if found is None and not read_only:
             self.con.execute(
                 "INSERT INTO meta VALUES ('schema_version', ?)", [str(SCHEMA_VERSION)]
             )
-        elif found is not None and int(found[0]) != SCHEMA_VERSION:
+        elif version == 1 and not read_only:
+            self._migrate_from_1()
+        elif version is not None and version not in (1, SCHEMA_VERSION):
             raise SchemaMismatch(
                 f"{self.path} has schema version {found[0]}; this code reads "
-                f"{SCHEMA_VERSION}"
+                f"1 and {SCHEMA_VERSION}"
             )
+
+    def _migrate_from_1(self) -> None:
+        """Schema 2 only adds nullable columns; every schema-1 row stays as it was."""
+        self.con.execute("BEGIN TRANSACTION")
+        for name, sql_type, _ in _V2_COLUMNS:
+            self.con.execute(f"ALTER TABLE runs ADD COLUMN IF NOT EXISTS {name} {sql_type}")
+        self.con.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'",
+                         [str(SCHEMA_VERSION)])
+        self.con.execute("COMMIT")
 
     def __enter__(self) -> Store:
         return self
@@ -162,6 +190,13 @@ class Store:
         a hundred thousand distinct samples, and row-at-a-time inserts would
         leave the study waiting on its writer.
         """
+        self._put(row, samples, trace, replace=False)
+
+    def replace(self, row: dict, samples: list[tuple] = (), trace: list[tuple] = ()) -> None:
+        """A key's rows swapped for new ones in one transaction: a pending job, collected."""
+        self._put(row, samples, trace, replace=True)
+
+    def _put(self, row, samples, trace, *, replace: bool) -> None:
         missing = set(RUN_COLUMNS) - set(row)
         extra = set(row) - set(RUN_COLUMNS)
         if missing or extra:
@@ -170,10 +205,14 @@ class Store:
             json.dumps(row[c]) if isinstance(row[c], (dict, list, tuple)) else row[c]
             for c in RUN_COLUMNS
         ]
+        names = ", ".join(RUN_COLUMNS)
         marks = ", ".join("?" for _ in RUN_COLUMNS)
         self.con.execute("BEGIN TRANSACTION")
         try:
-            self.con.execute(f"INSERT INTO runs VALUES ({marks})", values)
+            if replace:
+                for table in ("samples", "traces", "runs"):
+                    self.con.execute(f"DELETE FROM {table} WHERE key = ?", [row["key"]])
+            self.con.execute(f"INSERT INTO runs ({names}) VALUES ({marks})", values)
             for table, rows in (("samples", samples), ("traces", trace)):
                 if rows:
                     self._insert(table, _frame(row["key"], rows, _TYPES[table]))
@@ -190,7 +229,46 @@ class Store:
             self.con.unregister("_rows")
 
     def runs(self) -> pl.DataFrame:
-        return self.con.execute("SELECT * FROM runs ORDER BY key").pl()
+        frame = self.con.execute("SELECT * FROM runs ORDER BY key").pl()
+        for name, _, dtype in _V2_COLUMNS:
+            if name not in frame.columns:      # a schema-1 file, opened read-only
+                frame = frame.with_columns(pl.lit(None, dtype=dtype).alias(name))
+        return frame
+
+    def identities(self, solver: str) -> set[str]:
+        found = self.con.execute(
+            "SELECT identity FROM runs WHERE solver = ? AND identity IS NOT NULL "
+            "AND store_status IN (?, ?, ?)", [solver, OK, PENDING, ERROR],
+        ).fetchall()
+        return {r[0] for r in found}
+
+    def has_job(self, job_id: str) -> bool:
+        return self.con.execute(
+            "SELECT 1 FROM runs WHERE job_id = ? LIMIT 1", [job_id]).fetchone() is not None
+
+    def repeat_key(self, key: str, identity: str) -> str:
+        """``key`` if unstored, else ``key#r<n>``: a repeat keeps the earlier paid row."""
+        def taken(k):
+            return self.con.execute(
+                "SELECT 1 FROM runs WHERE key = ? LIMIT 1", [k]).fetchone() is not None
+        if not taken(key):
+            return key
+        n = self.con.execute(
+            "SELECT count(*) FROM runs WHERE identity = ?", [identity]).fetchone()[0]
+        while taken(f"{key}#r{n}"):
+            n += 1
+        return f"{key}#r{n}"
+
+    def gate_passed(self, identity: str) -> bool:
+        return self.con.execute(
+            "SELECT 1 FROM runs WHERE identity = ? AND kind = 'gate' AND store_status = ? "
+            "AND status = 'heuristic' AND error IS NULL LIMIT 1", [identity, OK],
+        ).fetchone() is not None
+
+    def pending_hardware(self) -> pl.DataFrame:
+        return self.con.execute(
+            "SELECT * FROM runs WHERE store_status = ? ORDER BY key", [PENDING]
+        ).pl()
 
     def samples(self) -> pl.DataFrame:
         return self.con.execute("SELECT * FROM samples ORDER BY key, digest").pl()

@@ -86,3 +86,52 @@ def test_the_cli_run_refuses_a_store_of_another_schema(tmp_path):
                                       "--allow-dirty", "--workers", "1"])
     assert result.exit_code == 1
     assert "schema version 999" in result.output
+
+
+def _config(tmp_path):
+    config = tmp_path / "exp.toml"
+    config.write_text("[instances]\ndials = ['none']\n[solvers.almgren_chriss]\n"
+                      "budgets_s = [1]\n", encoding="utf-8")
+    return config
+
+
+def test_the_cli_run_exits_1_when_the_hardware_lane_stopped(tmp_path, monkeypatch):
+    from quantic.bench import runner
+
+    seen = {}
+
+    def stopped(experiment, **kw):
+        seen.update(kw)
+        return runner.Summary(n_written=1, n_killed=0, n_errors=0,
+                              hardware_stop="290.0 s of the 300 s window are used")
+
+    monkeypatch.setattr(runner, "run", stopped)
+    result = CliRunner().invoke(app, ["bench", "run", str(_config(tmp_path)),
+                                      "--store", str(tmp_path / "s.duckdb"),
+                                      "--hardware-only"])
+    assert result.exit_code == 1
+    assert "hardware lane stopped: 290.0 s" in result.output
+    assert seen["hardware_only"] is True and seen["no_hardware"] is False
+
+
+def test_the_cli_run_exits_0_when_the_hardware_lane_did_not_stop(tmp_path, monkeypatch):
+    from quantic.bench import runner
+
+    monkeypatch.setattr(runner, "run", lambda experiment, **kw: runner.Summary(1, 0, 0))
+    result = CliRunner().invoke(app, ["bench", "run", str(_config(tmp_path)),
+                                      "--store", str(tmp_path / "s.duckdb")])
+    assert result.exit_code == 0, result.output
+
+
+def test_the_cli_refuses_hardware_only_with_no_hardware(tmp_path, monkeypatch):
+    from quantic.bench import runner
+
+    def never(*a, **kw):
+        raise AssertionError("must not run")
+
+    monkeypatch.setattr(runner, "run", never)
+    result = CliRunner().invoke(app, ["bench", "run", str(_config(tmp_path)),
+                                      "--store", str(tmp_path / "s.duckdb"),
+                                      "--hardware-only", "--no-hardware"])
+    assert result.exit_code != 0
+    assert "--no-hardware" in result.output

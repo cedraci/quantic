@@ -17,15 +17,17 @@ import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from quantic.bench.config import Experiment
+from quantic.bench.config import QUANTUM_SOLVERS, Experiment, QuantumSettings
 
 RUN = "run"
 REFERENCE = "reference"
+GATE = "gate"
 
 # Reference solvers: computed once per instance, never budgeted.
 REF_BRACKET = "ref:exact_pwl_milp"
 REF_BRUTE_FORCE = "ref:brute_force"
 REF_QUBO_MINIMUM = "ref:qubo_minimum"
+REF_QAOA_ANGLES = "ref:qaoa_angles"
 
 
 @dataclass(frozen=True)
@@ -47,11 +49,32 @@ class Task:
     solver_seed: int | None = None
     budget_s: float | None = None
     max_samples: int | None = None
+    params: str | None = None
 
     def key(self, code: CodeVersion) -> str:
         payload = {**asdict(self), "commit": code.commit, "lock_hash": code.lock_hash}
         text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def identity(self) -> str:
+        """The task without the code that runs it: the same work under any commit."""
+        text = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def qaoa_params(settings: QuantumSettings, *, device: bool) -> str:
+    body = {"reps": settings.reps, "alpha": settings.alpha, "maxiter": settings.maxiter}
+    if device:
+        body["device"] = settings.device
+    return json.dumps(body, sort_keys=True, separators=(",", ":"))
+
+
+def gate_for(task: Task, settings: QuantumSettings) -> Task:
+    """The short noisy run that must pass before ``task`` may use hardware."""
+    return Task(kind=GATE, tier=task.tier, dials=task.dials,
+                instance_seed=task.instance_seed, solver="qaoa_noisy",
+                encoding=task.encoding, zeta_bits=task.zeta_bits, solver_seed=0,
+                max_samples=settings.gate_shots, params=qaoa_params(settings, device=True))
 
 
 def code_version(root: Path) -> CodeVersion:
@@ -73,6 +96,7 @@ def expand(experiment: Experiment) -> list[Task]:
     """Every task the experiment asks for: references first, then runs."""
     references: list[Task] = []
     runs: list[Task] = []
+    gates: list[Task] = []
     qubo_encodings = sorted({
         (e, p.zeta_bits) for p in experiment.solvers for e in p.encodings if e is not None
     })
@@ -89,13 +113,36 @@ def expand(experiment: Experiment) -> list[Task]:
                             kind=REFERENCE, solver=REF_QUBO_MINIMUM,
                             encoding=encoding, zeta_bits=bits, **at,
                         ))
+                quantum = [p for p in experiment.solvers if p.name in QUANTUM_SOLVERS]
+                for encoding, bits in sorted({(e, p.zeta_bits) for p in quantum
+                                              for e in p.encodings}):
+                    references.append(Task(
+                        kind=REFERENCE, solver=REF_QAOA_ANGLES, encoding=encoding,
+                        zeta_bits=bits, params=qaoa_params(experiment.quantum, device=False),
+                        **at,
+                    ))
                 for plan in experiment.solvers:
                     for encoding in plan.encodings:
                         for solver_seed in plan.seeds:
+                            if plan.name in QUANTUM_SOLVERS:
+                                q = experiment.quantum
+                                task = Task(
+                                    kind=RUN, solver=plan.name, encoding=encoding,
+                                    zeta_bits=plan.zeta_bits, solver_seed=solver_seed,
+                                    max_samples=q.shots,
+                                    params=qaoa_params(q, device=plan.name != "qaoa_ideal"),
+                                    **at,
+                                )
+                                runs.append(task)
+                                if plan.name == "qaoa_ibm":
+                                    gate = gate_for(task, q)
+                                    if gate not in gates:
+                                        gates.append(gate)
+                                continue
                             for budget in plan.budgets_s:
                                 runs.append(Task(
                                     kind=RUN, solver=plan.name, encoding=encoding,
                                     zeta_bits=plan.zeta_bits, solver_seed=solver_seed,
                                     budget_s=budget, max_samples=plan.max_samples, **at,
                                 ))
-    return references + runs
+    return references + runs + gates

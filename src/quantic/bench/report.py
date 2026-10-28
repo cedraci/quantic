@@ -20,18 +20,24 @@ cell whose instances lack a reference cannot succeed; ``cells`` counts them in
 from __future__ import annotations
 
 import itertools
+import json
+import time
 from pathlib import Path
 
 import polars as pl
 
-from quantic.bench.keys import REF_BRACKET, REFERENCE, RUN
-from quantic.bench.metrics import cells
-from quantic.bench.store import OK, Store
+from quantic.bench.config import QUANTUM_SOLVERS
+from quantic.bench.keys import REF_BRACKET, REF_QAOA_ANGLES, REFERENCE, RUN
+from quantic.bench.metrics import cells, scored
+from quantic.bench.store import OK, PENDING, Store
 from quantic.problem.dials import Dials
+from quantic.solvers.quantum.quota import WINDOW_S, Ledger
 
 DIALS = ("D1", "D2", "D3", "D4")
 _OVERLAP_RTOL = 1e-6
 CENSORED = "censored"
+SIMULATED = "simulated"
+_SIMULATORS = ("qaoa_ideal", "qaoa_noisy")
 
 
 class CommitChoice(ValueError):
@@ -102,7 +108,7 @@ def _skipped(gaps: dict) -> str | None:
 
 def dial_effects(best: pl.DataFrame) -> pl.DataFrame:
     """The factorial contrasts, and one ``skipped`` row per (tier, solver) without them."""
-    top = best.filter(pl.col("budget_s") == best["budget_s"].max())
+    top = best.filter(pl.col("budget_s") == best["budget_s"].max()) if best.height else best
     out = []
     for (tier, solver), group in top.group_by(["tier", "solver"], maintain_order=True):
         gaps = {r["dials"]: r["gap_median"] for r in group.iter_rows(named=True)}
@@ -211,25 +217,107 @@ def _write(
     return [csv, md]
 
 
-def report(store: Path, out: Path, *, commit: str | None = None) -> list[Path]:
-    with Store(store, read_only=True) as s:
-        runs = s.runs()
-    present = sorted(runs["commit"].unique().to_list())
+def _choose_commit(runs: pl.DataFrame, commit: str | None) -> pl.DataFrame:
+    """One commit's rows, plus every hardware row: hardware is never run twice."""
+    hardware = pl.col("solver") == "qaoa_ibm"
+    present = sorted(runs.filter(~hardware)["commit"].unique().to_list())
     if commit is not None:
         if commit not in present:
             raise CommitChoice(
                 f"the store holds no rows from commit {commit!r}; it holds {present}"
             )
-        runs = runs.filter(pl.col("commit") == commit)
-    elif len(present) > 1:
+        return runs.filter((pl.col("commit") == commit) | hardware)
+    if len(present) > 1:
         raise CommitChoice(
             f"the store holds rows from {len(present)} commits, {present}; pass "
             "--commit to choose one, since rows from different code do not belong "
             "in one table"
         )
+    return runs
+
+
+def without_simulated_tts(table: pl.DataFrame) -> pl.DataFrame:
+    """A simulator's time is not quantum time (decision D6): its TTS columns are null."""
+    simulated = pl.col("solver").is_in(_SIMULATORS)
+    return table.with_columns(
+        pl.when(simulated).then(None).otherwise(pl.col(c)).alias(c)
+        for c in table.columns if c.startswith("tts99")
+    )
+
+
+def matched_reads(table: pl.DataFrame) -> pl.DataFrame:
+    quantum = table.filter(pl.col("solver").is_in(QUANTUM_SOLVERS))
+    if quantum.is_empty():
+        return quantum
+    shots = quantum["max_samples"].drop_nulls().unique().to_list()
+    samplers = table.filter(~pl.col("solver").is_in(QUANTUM_SOLVERS)
+                            & pl.col("max_samples").is_in(shots))
+    both = pl.concat([quantum, samplers], how="diagonal_relaxed")
+    tts = [
+        SIMULATED if r["solver"] in _SIMULATORS
+        else (f"{r['tts99_s']:.3g}s" if r["tts99_s"] is not None else "censored")
+        for r in both.iter_rows(named=True)
+    ]
+    return both.with_columns(pl.Series("tts", tts)).select(
+        "tier", "dials", "solver", "encoding", "max_samples", "n_runs",
+        "p_success_0.01", "p_success_0.05", "gap_median", "feasibility", "tts",
+    ).sort("tier", "dials", "solver", "encoding")
+
+
+def qaoa_noise(scored_runs: pl.DataFrame) -> pl.DataFrame:
+    rows = scored_runs.filter(pl.col("solver").is_in(QUANTUM_SOLVERS))
+    if rows.is_empty():
+        return rows.select("tier", "dials", "instance_seed", "encoding", "solver")
+    return rows.group_by(["tier", "dials", "instance_seed", "encoding", "solver"],
+                         maintain_order=True).agg(
+        pl.len().alias("n_runs"),
+        pl.col("ok_0.01").mean().alias("p_success_0.01"),
+        (pl.col("n_feasible_samples").sum() / pl.col("n_samples").sum()).alias("feasibility"),
+        pl.col("routed_depth").median().alias("routed_depth"),
+        pl.col("routed_2q").median().alias("routed_2q"),
+        # Null, not 0 s, where no row has QPU time: simulators, and unknown usage.
+        pl.when(pl.col("qpu_s").is_not_null().any())
+        .then(pl.col("qpu_s").sum()).alias("qpu_s"),
+    ).sort("tier", "dials", "instance_seed", "encoding", "solver")
+
+
+def qaoa_training(runs: pl.DataFrame) -> pl.DataFrame:
+    rows = runs.filter((pl.col("solver") == REF_QAOA_ANGLES) & (pl.col("store_status") == OK))
+    out = []
+    for r in rows.iter_rows(named=True):
+        detail = json.loads(r["detail"]) if isinstance(r["detail"], str) else (r["detail"] or {})
+        out.append({"tier": r["tier"], "dials": r["dials"], "instance_seed": r["instance_seed"],
+                    "encoding": r["encoding"], "n_vars": r["n_vars"],
+                    "dynamic_range": r["dynamic_range"],
+                    "ising_dynamic_range": detail.get("ising_dynamic_range"),
+                    "train_s": r["total_s"], "cvar": detail.get("cvar"),
+                    "n_evals": detail.get("n_evals")})
+    return pl.DataFrame(out, schema={
+        "tier": pl.String, "dials": pl.String, "instance_seed": pl.Int64,
+        "encoding": pl.String, "n_vars": pl.Int64, "dynamic_range": pl.Float64,
+        "ising_dynamic_range": pl.Float64, "train_s": pl.Float64, "cvar": pl.Float64,
+        "n_evals": pl.Int64,
+    })
+
+
+def quota_table(path: Path, now: float) -> pl.DataFrame:
+    ledger = Ledger(path)
+    entries = ledger.entries()
+    frame = pl.DataFrame([vars(e) for e in entries]) if entries else pl.DataFrame(
+        schema={"job_id": pl.String, "usage_s": pl.Float64})
+    return frame.with_columns(pl.lit(ledger.used_s(now)).alias("used_in_window_s"),
+                              pl.lit(WINDOW_S).alias("window_s"))
+
+
+def report(store: Path, out: Path, *, commit: str | None = None,
+           ledger_path: Path | None = None) -> list[Path]:
+    with Store(store, read_only=True) as s:
+        runs = s.runs()
+    runs = _choose_commit(runs, commit)
     out.mkdir(parents=True, exist_ok=True)
-    table = cells(runs)
-    best = best_encoding(table)
+    table = without_simulated_tts(cells(runs))
+    budgeted = table.filter(pl.col("budget_s").is_not_null())
+    best = best_encoding(budgeted)
     written = _write(table, out, "cells")
     for budget in sorted(best["budget_s"].unique().to_list()):
         written += _write(crossover(best, budget), out, f"crossover_{budget:g}s")
@@ -237,4 +325,11 @@ def report(store: Path, out: Path, *, commit: str | None = None) -> list[Path]:
     apart = bracket_check(runs)
     written += _write(apart, out, "bracket_check", _bracket_markdown(runs, apart))
     written += _write(failed_references(runs), out, "references")
+    if runs.filter(pl.col("solver").is_in([*QUANTUM_SOLVERS, REF_QAOA_ANGLES])).height:
+        written += _write(matched_reads(table), out, "matched_reads")
+        written += _write(qaoa_noise(scored(runs.filter(pl.col("store_status") != PENDING))),
+                          out, "qaoa_noise")
+        written += _write(qaoa_training(runs), out, "qaoa_training")
+    if ledger_path is not None and Path(ledger_path).exists():
+        written += _write(quota_table(Path(ledger_path), time.time()), out, "quota")
     return written

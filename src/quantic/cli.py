@@ -24,6 +24,8 @@ from quantic.data.manifest import MANIFEST_FILENAME
 from quantic.data.request import default_request
 from quantic.data.schemas import validate_values
 from quantic.data.synth import SynthConfig, generate_bundle
+from quantic.solvers.quantum.ibm import NoAccount
+from quantic.solvers.quantum.quota import QuotaBusy, QuotaExhausted, default_path
 
 app = typer.Typer(help="Quantic: quantum vs classical liquidation benchmarking.")
 data_app = typer.Typer(help="Dataset bundles.")
@@ -376,6 +378,13 @@ def bench_plan(
         f"about {p.estimate_s / 3600:.1f} h on {p.n_workers} workers "
         "(every budget spent in full: an upper estimate)"
     )
+    if p.n_over_max or p.n_over_noisy:
+        console.print(
+            f"left out of the plan: {p.n_over_max} quantum tasks above max_qubits, "
+            f"{p.n_over_noisy} full noisy runs above noisy_max_qubits"
+        )
+    if p.n_hardware:
+        console.print(f"{p.n_hardware} hardware tasks wait for the IBM lane")
 
 
 @bench_app.command("run")
@@ -386,19 +395,40 @@ def bench_run(
     allow_dirty: Annotated[
         bool, typer.Option("--allow-dirty", help="Run on uncommitted changes; recorded.")
     ] = False,
+    no_hardware: Annotated[
+        bool, typer.Option("--no-hardware", help="Run everything except IBM hardware jobs.")
+    ] = False,
+    repeat_hardware: Annotated[
+        bool, typer.Option("--repeat-hardware",
+                           help="Submit every planned hardware task again, even if "
+                                "stored; earlier rows are kept.")
+    ] = False,
+    hardware_only: Annotated[
+        bool, typer.Option("--hardware-only",
+                           help="Run only the IBM hardware lane: no classical, training "
+                                "or sampling task, even after a new commit.")
+    ] = False,
 ) -> None:
     """Run every task the store does not hold yet. Safe to interrupt and rerun."""
+    if hardware_only and no_hardware:
+        raise typer.BadParameter("--hardware-only and --no-hardware together run nothing",
+                                 param_hint="--hardware-only")
     try:
         s = bench_runner.run(
             _experiment(config), root=_REPO_ROOT, store=store, workers=workers,
-            allow_dirty=allow_dirty,
+            allow_dirty=allow_dirty, no_hardware=no_hardware,
+            repeat_hardware=repeat_hardware, hardware_only=hardware_only,
         )
-    except (bench_runner.DirtyTree, StoreBusy, SchemaMismatch, WorkerStartError) as exc:
+    except (bench_runner.DirtyTree, StoreBusy, SchemaMismatch, WorkerStartError,
+            QuotaExhausted, QuotaBusy, NoAccount) as exc:
         _say_why(exc)
         raise typer.Exit(code=1) from exc
     console.print(
         f"wrote {s.n_written} rows: {s.n_killed} killed, {s.n_errors} errors"
     )
+    if s.hardware_stop:
+        console.print(f"hardware lane stopped: {s.hardware_stop}")
+        raise typer.Exit(code=1)
 
 
 @bench_app.command("report")
@@ -406,10 +436,12 @@ def bench_report_command(
     store: Annotated[Path, typer.Argument(help="The DuckDB store.")],
     out: Annotated[Path, typer.Option("--out")],
     commit: Annotated[str | None, typer.Option("--commit")] = None,
+    ledger: Annotated[Path | None, typer.Option("--ledger")] = None,
 ) -> None:
     """Write the crossover tables, dial effects, bracket check and failed references."""
     try:
-        written = bench_report.report(store, out, commit=commit)
+        written = bench_report.report(store, out, commit=commit,
+                                      ledger_path=ledger or default_path())
     except (FileNotFoundError, StoreBusy, SchemaMismatch, bench_report.CommitChoice) as exc:
         _say_why(exc)
         raise typer.Exit(code=1) from exc

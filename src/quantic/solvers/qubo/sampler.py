@@ -99,9 +99,16 @@ def batch_seed(seed: int, batch: int) -> int:
 
 
 def run_sampler(
-    name: str, enc: EncodedInstance, budget: Budget, seed: int, draw: Draw
+    name: str, enc: EncodedInstance, budget: Budget, seed: int, draw: Draw,
+    *, one_batch: bool = False,
 ) -> Result:
-    """Draw batches until the budget is spent, then report every sample."""
+    """Draw batches until the budget is spent, then report every sample.
+
+    ``one_batch`` draws the whole sample cap at once: a circuit sampled once
+    at fixed angles, rather than a sampler whose stream is cut by the clock.
+    """
+    if one_batch and budget.max_samples is None:
+        raise ValueError(f"{name}: one batch needs a sample cap to know its size")
     if budget.wall_clock_s is None and budget.max_samples is None:
         raise ValueError(
             f"{name} needs a wall clock or a sample cap: a sampler has no other "
@@ -116,7 +123,7 @@ def run_sampler(
     mismatch = 0.0
     drawn = 0
     batch = 0
-    size = 1
+    size = budget.max_samples if one_batch else 1
 
     while True:
         if budget.max_samples is not None:
